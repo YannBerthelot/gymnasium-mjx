@@ -1,0 +1,29 @@
+name: Compatibility
+
+# The declared dependency floors and the newest releases (RELEASING.md,
+# "between releases"): weekly, and when the dependencies change.
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths: [pyproject.toml, uv.lock]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        resolution: [highest, lowest-direct]
+    env:
+      JAX_PLATFORMS: cpu
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv sync --upgrade --resolution ${{ matrix.resolution }} --python 3.12
+      - run: uv run --no-sync pytest

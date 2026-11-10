@@ -1,0 +1,71 @@
+[project]
+name = "gymnasium-mjx"
+version = "0.1.0"
+description = "Gymnasium's v5 MuJoCo tasks, unchanged, stepped in JAX by MJX."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "src/gymnasium_mjx/assets/LICENSE"]
+authors = [{ name = "Yann Berthelot" }]
+requires-python = ">=3.12"
+keywords = ["reinforcement-learning", "mujoco", "mjx", "jax", "gymnasium"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# jax: register_dataclass without field lists. mujoco and mujoco-mjx move
+# together (MJX X.Y needs MuJoCo X.Y). The range is deliberate: the package
+# reproduces Gymnasium's tasks, so it takes the MuJoCo versions on which MJX
+# and C MuJoCo agree. From 3.11, C MuJoCo moves Reacher's first-joint
+# velocity by up to 2e-8 after one step and MJX does not follow; MJX 3.6
+# fails on current jax (jnp.clip's a_min). tests/test_tasks.py checks the
+# agreement before a bound moves.
+dependencies = [
+    "jax>=0.5",
+    "mujoco>=3.7,<3.11",
+    "mujoco-mjx>=3.7,<3.11",
+]
+
+[project.optional-dependencies]
+# PlaygroundTask, for Playground's wrappers and the libraries built on them.
+# The one ceiling: playground 1.0 is a different library (torch, warp) with
+# no MjxEnv to adapt to.
+playground = ["playground>=0.2.0,<1"]
+
+[project.urls]
+Changelog = "https://github.com/YannBerthelot/gymnasium-mjx/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+# Gymnasium is the tests' oracle and the tools' reference, never a runtime
+# dependency.
+dev = [
+    "gymnasium-mjx[playground]",
+    "gymnasium[mujoco]>=1.0",
+    "pytest>=8",
+    "pre-commit>=3.3",
+    "ruff>=0.11.6",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["uv_build>=0.8"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--durations=10"
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["I", "F", "E", "W", "B", "C", "RUF", "ARG"]
+ignore = ["E501", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["mujoco.*", "mujoco_playground.*", "ml_collections.*"]
+ignore_missing_imports = true

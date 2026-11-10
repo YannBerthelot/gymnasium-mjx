@@ -1,0 +1,230 @@
+name: Release
+
+# A release, by hand, in the shape of RELEASING.md: check, test, build once,
+# the installed-package gate, then the vX.Y.Z tag, PyPI by trusted
+# publishing, the GitHub release, and the release installed back from PyPI.
+# Each job needs the one before it, so the first failure stops the release.
+# There is no documentation site yet: the README is the documentation.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version to tag, X.Y.Z, with its "## X.Y.Z" CHANGELOG entry on main.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: check
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must be X.Y.Z"; exit 1; }
+          grep -qx "## $VERSION" CHANGELOG.md || { echo "CHANGELOG.md has no '## $VERSION'"; exit 1; }
+          project=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          [ "$project" = "$VERSION" ] || { echo "pyproject.toml's version is $project, not $VERSION"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$VERSION" > /dev/null; then
+            echo "v$VERSION exists"; exit 1
+          fi
+          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || { echo "not main's head"; exit 1; }
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  # The package has one test tier, so "the slowest tier" is the whole suite.
+  test:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JAX_PLATFORMS: cpu
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv sync --locked
+      - run: uv run pytest
+
+  build:
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv build --no-sources
+      - name: Check the wheel and the sdist
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          wheel="dist/gymnasium_mjx-$VERSION-py3-none-any.whl"
+          meta=$(unzip -p "$wheel" '*.dist-info/METADATA')
+          grep -qx "Name: gymnasium-mjx" <<< "$meta" || { echo "the wheel is not gymnasium-mjx"; exit 1; }
+          grep -qx "Version: $VERSION" <<< "$meta" || { echo "the wheel is not $VERSION"; exit 1; }
+          test -f "dist/gymnasium_mjx-$VERSION.tar.gz" || { echo "no sdist for $VERSION"; exit 1; }
+          unzip -l "$wheel" | grep -q "gymnasium_mjx/assets/hopper.xml" || { echo "the wheel has no model files"; exit 1; }
+          uvx check-wheel-contents@0.6.3 "$wheel"
+          uvx twine@7.0.0 check --strict dist/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # The wheel in a fresh environment outside the checkout, on the oldest and
+  # the newest supported Python: each install steps every task, and the one
+  # with the playground extra also runs the README's examples.
+  installed:
+    name: Installed package (${{ matrix.extra }}, ${{ matrix.python }})
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
+        extra: [core, playground]
+    env:
+      JAX_PLATFORMS: cpu
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: ${{ runner.temp }}/dist
+      - name: Install the wheel in a fresh environment
+        env:
+          EXTRA: ${{ matrix.extra }}
+          PYTHON: ${{ matrix.python }}
+        run: |
+          wheel=$(ls "$RUNNER_TEMP"/dist/gymnasium_mjx-*.whl)
+          if [ "$EXTRA" = core ]; then requirement="gymnasium-mjx @ file://$wheel"; else requirement="gymnasium-mjx[$EXTRA] @ file://$wheel"; fi
+          cd "$RUNNER_TEMP"
+          uv venv --python "$PYTHON" env
+          uv pip install --python env/bin/python "$requirement"
+          echo "$RUNNER_TEMP/env/bin" >> "$GITHUB_PATH"
+      - name: Check that the package is the installed wheel
+        run: |
+          python -c '
+          import pathlib, sysconfig, gymnasium_mjx
+          location = pathlib.Path(gymnasium_mjx.__file__).resolve()
+          site = pathlib.Path(sysconfig.get_paths()["purelib"]).resolve()
+          assert location.is_relative_to(site), f"gymnasium_mjx comes from {location}, not {site}"
+          '
+      - name: A step of every task
+        run: |
+          python -c '
+          import jax, gymnasium_mjx
+          for task_id in gymnasium_mjx.TASKS:
+              task = gymnasium_mjx.make(task_id)
+              state = task.step(task.reset(jax.random.key(0)), jax.numpy.zeros(task.action_size))
+              assert state.obs.shape == (task.observation_size,), task_id
+          '
+      - if: matrix.extra == 'playground'
+        run: python tests/test_readme.py README.md
+
+  tag:
+    needs: [check, installed]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "gymnasium-mjx $VERSION" "${{ needs.check.outputs.sha }}"
+          git push origin "v$VERSION"
+
+  # Trusted publishing from the protected pypi environment: no stored token.
+  # The files are the ones the build job checked, not a rebuild.
+  publish:
+    needs: tag
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv publish --trusted-publishing always
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ inputs.version }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          # The version's CHANGELOG entry: from its heading to the next one.
+          awk -v heading="## $VERSION" '$0 == heading {found = 1; next} found && /^## / {exit} found' CHANGELOG.md > notes.md
+          gh release create "v$VERSION" dist/* --title "$VERSION" --notes-file notes.md --latest
+
+  # What a user installs, from PyPI, retried while the index catches up. A
+  # failure opens an issue; whether to yank is the owner's call.
+  verify:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+    env:
+      JAX_PLATFORMS: cpu
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ inputs.version }}
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Install the release from PyPI
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          cd "$RUNNER_TEMP"
+          uv venv --python 3.12 env
+          deadline=$((SECONDS + 1200))
+          until uv pip install --python env/bin/python --no-cache "gymnasium-mjx[playground]==$VERSION"; do
+            [ "$SECONDS" -lt "$deadline" ] || { echo "gymnasium-mjx $VERSION is not installable after 20 minutes"; exit 1; }
+            sleep 30
+          done
+      - run: |
+          "$RUNNER_TEMP/env/bin/python" tests/test_readme.py README.md
+      - if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "gymnasium-mjx $VERSION from PyPI fails its check" \
+            --body "The Release workflow published gymnasium-mjx $VERSION, but installing it from PyPI or running the README's examples on it failed: $RUN. Whether to yank it is the owner's call."
