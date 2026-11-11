@@ -12,6 +12,11 @@ on:
         description: The version to tag, X.Y.Z, with its "## X.Y.Z" CHANGELOG entry on main.
         required: true
 
+# One release at a time; a second dispatch waits instead of racing the tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: read
 

@@ -8,7 +8,7 @@ numbers on Gymnasium's MuJoCo tasks, while the tasks run under `jit` and
 `vmap`, on CPU or GPU.
 
 This is not a Farama Foundation project. The model files are Gymnasium's,
-under its MIT licence (`src/gymnasium_mjx/assets/LICENSE`).
+under its MIT licence (`LICENSES/Gymnasium.txt`).
 
 ## Install
 
@@ -134,10 +134,32 @@ Gymnasium itself, on MuJoCo's C library, is the reference.
   both sides for 100 episodes each; the mean returns are equivalent within
   ±2% (two one-sided tests at 5%) on HalfCheetah, Swimmer, Walker2d and
   Hopper.
-- **Learning curves.** SAC trained on both sides, 20 seeds each: on
-  HalfCheetah the final returns differ by +1.8% (90% confidence interval
-  −2.0% to +5.6%). The other tasks are still running. The script is Ajax's
-  `benchmarks/mujoco_curves.py`, since it needs an agent.
+- **Learning curves** (below): the same agent learns the same on both sides.
+
+### Learning curves
+
+SAC ([Ajax](https://github.com/YannBerthelot/Ajax)'s, same settings and
+seeds) trained for 1M steps on Gymnasium and on gymnasium-mjx. Mean
+evaluation return with a 95% band:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/YannBerthelot/gymnasium-mjx/main/docs/curves-dark.png">
+  <img alt="SAC learning curves on Gymnasium and gymnasium-mjx: HalfCheetah, Hopper and Swimmer overlap" src="https://raw.githubusercontent.com/YannBerthelot/gymnasium-mjx/main/docs/curves-light.png">
+</picture>
+
+Final return, the mean of each seed's last 10 evaluations (the last 100k steps):
+
+| Task | Seeds | Gymnasium | gymnasium-mjx | Difference (90% CI) |
+|---|---|---|---|---|
+| HalfCheetah-v5 | 20 / 20 | 10,438 | 10,624 | +1.8% (−2.0% to +5.6%) |
+| Hopper-v5 | 20 / 5 | 2,897 | 3,215 | +11.0% (−1.0% to +22.9%) |
+| Swimmer-v5 | 20 / 5 | 75 | 70 | −5.6% (−19.2% to +8.0%) |
+
+Every interval contains zero. With 5 seeds on the MJX side, Hopper and
+Swimmer's intervals are still wide; their 20-seed runs and Walker2d's are in
+progress. The training script is Ajax's `benchmarks/mujoco_curves.py` (it
+needs an agent); `tools/plot_curves.py` draws the figure and the table from
+its output.
 
 ## Tools
 
@@ -161,4 +183,5 @@ uv run pytest
 ## Licence
 
 MIT (`LICENSE`). The model files in `src/gymnasium_mjx/assets/` are
-Gymnasium's, MIT, copyright OpenAI and the Farama Foundation.
+Gymnasium's, MIT, copyright OpenAI and the Farama Foundation
+(`LICENSES/Gymnasium.txt`).

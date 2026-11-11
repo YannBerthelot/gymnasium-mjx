@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Gymnasium's v5 MuJoCo tasks, unchanged, stepped in JAX by MJX."
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE", "src/gymnasium_mjx/assets/LICENSE"]
+license-files = ["LICENSE", "LICENSES/Gymnasium.txt"]
 authors = [{ name = "Yann Berthelot" }]
 requires-python = ">=3.12"
 keywords = ["reinforcement-learning", "mujoco", "mjx", "jax", "gymnasium"]
