@@ -6,12 +6,11 @@
 
 All eleven of Gymnasium's v5 MuJoCo tasks.
 
-Upgrade notes: the contact change below moves results on the tasks with
-capsules on the floor (HalfCheetah, Hopper, Walker2d, Swimmer's and Pusher's
-contacts included): one step changes by at most 1e-10 on the planar tasks,
-where the old frame already matched C, but trajectories with contacts then
-drift apart, as between two MuJoCo builds. Runs compare across this version
-only statistically.
+Upgrade notes: the contact change below can move results on the tasks
+whose capsules touch the floor or each other (HalfCheetah, Hopper, Walker2d,
+Pusher). One step stays within 1e-8 of Gymnasium's, as before, but
+trajectories with contacts can drift apart from 0.1.0's, as between two
+MuJoCo builds: compare runs across the two versions statistically.
 
 - Ant-v5, Humanoid-v5 and HumanoidStandup-v5, with the contact forces
   (`cfrc_ext`) in their observations and costs. Humanoid's models ask for
