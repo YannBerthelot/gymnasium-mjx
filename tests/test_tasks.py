@@ -21,6 +21,16 @@ import pytest
 
 from gymnasium_mjx import TASKS, make
 
+
+def x64(enabled):
+    """jax.enable_x64 as a context. Older jax, down to the floor (0.5), has it
+    only as jax.experimental.enable_x64."""
+    context = getattr(jax, "enable_x64", None)
+    if context is None:
+        from jax.experimental import enable_x64 as context
+    return context(enabled)
+
+
 STEPS = 40
 # Both sides run MuJoCo's equations in float64; only the order of floating
 # point operations differs (XLA against C), about 1e-15 per operation. The
@@ -65,7 +75,7 @@ def test_one_step_from_gymnasiums_states_gives_gymnasiums_values(task_id, dtype)
     rows = gymnasium_steps(task_id, n_steps=100)
     tolerance = ONE_STEP_TOLERANCE[dtype]
 
-    with jax.enable_x64(dtype == "float64"):
+    with x64(dtype == "float64"):
         task = make(task_id)
         template = task.reset(jax.random.key(0))
 
@@ -134,7 +144,7 @@ def test_a_task_steps_as_gymnasium_does(task_id):
     )
     expected = [reference.step(action)[:3] for action in actions]
 
-    with jax.enable_x64(True):
+    with x64(True):
         task = make(task_id)
         reset = task.reset(jax.random.key(0))
         # The reference's reset draw, placed in the task's state.
