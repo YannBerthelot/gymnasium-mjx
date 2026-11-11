@@ -11,6 +11,8 @@ import jax.numpy as jnp
 import mujoco
 from mujoco import mjx
 
+from gymnasium_mjx.contact import c_contacts
+
 ASSETS = Path(__file__).parent / "assets"
 
 #: Set in every name's tag, so that no key derived by name is one that a
@@ -24,6 +26,12 @@ def derive_key(key: jax.Array, name: str) -> jax.Array:
     the top bit set: the same in every process (Python's hash is salted per
     process), and the same as Ajax's derive_key, so the draws match it."""
     return jax.random.fold_in(key, zlib.crc32(name.encode()) | NAMED_TAG_BIT)
+
+
+def cfrc_ext(data: mjx.Data) -> jax.Array:
+    """The bodies' external forces (Gymnasium's data.cfrc_ext), which MJX
+    keeps with its JAX implementation's fields."""
+    return data._impl.cfrc_ext
 
 
 @jax.tree_util.register_dataclass
@@ -56,11 +64,19 @@ class GymnasiumTask:
     xml_file: str
     frame_skip: int
     episode_length: int = 1000
+    #: Whether the task reads cfrc_ext, which Gymnasium computes after every
+    #: step (mj_rnePostConstraint) and MJX only on request.
+    contact_forces: bool = False
 
     def __init__(self, physics: str = "jax"):
         self.physics = physics
         self.xml_path = str(ASSETS / self.xml_file)
         self.mj_model = mujoco.MjModel.from_xml_path(self.xml_path)
+        if self.mj_model.opt.solver == mujoco.mjtSolver.mjSOL_PGS:
+            # MJX has no PGS (Humanoid's models ask for it). Newton solves the
+            # same convex problem; PGS stopping at its iteration limit is what
+            # separates them (up to 3e-4 in velocity after one step).
+            self.mj_model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
         self.mjx_model = mjx.put_model(self.mj_model, impl=physics)
         self.sim_dt = float(self.mj_model.opt.timestep)
         self.dt = self.sim_dt * self.frame_skip
@@ -79,7 +95,12 @@ class GymnasiumTask:
     def set_state(self, qpos: jax.Array, qvel: jax.Array) -> mjx.Data:
         """Gymnasium's set_state: the state, then mj_forward."""
         data = mjx.make_data(self.mj_model, impl=self.physics)
-        return mjx.forward(self.mjx_model, data.replace(qpos=qpos, qvel=qvel))
+        with c_contacts():
+            data = mjx.forward(self.mjx_model, data.replace(qpos=qpos, qvel=qvel))
+        # MJX's forward writes free joints' quaternions back normalised; C
+        # MuJoCo's leaves qpos as set, and Gymnasium's reset observation shows
+        # the noisy, unnormalised quaternion.
+        return data.replace(qpos=qpos)
 
     def initial_state(self, key: jax.Array) -> tuple[jax.Array, jax.Array]:
         """The task's reset_model draw: (qpos, qvel)."""
@@ -108,7 +129,11 @@ class GymnasiumTask:
         def substep(data: mjx.Data, _: None) -> tuple[mjx.Data, None]:
             return mjx.step(self.mjx_model, data.replace(ctrl=action)), None
 
-        return jax.lax.scan(substep, data, None, self.frame_skip)[0]
+        with c_contacts():
+            data = jax.lax.scan(substep, data, None, self.frame_skip)[0]
+        if self.contact_forces:
+            data = mjx.rne_postconstraint(self.mjx_model, data)
+        return data
 
     def step(self, state: State, action: jax.Array) -> State:
         data = self.physics_step(state.data, action)

@@ -16,20 +16,12 @@ epsilon; the oracle is Gymnasium itself, run on MuJoCo's C library):
 import gymnasium
 import jax
 import jax.numpy as jnp
+import mujoco
 import numpy as np
 import pytest
 
+from conftest import x64
 from gymnasium_mjx import TASKS, make
-
-
-def x64(enabled):
-    """jax.enable_x64 as a context. Older jax, down to the floor (0.5), has it
-    only as jax.experimental.enable_x64."""
-    context = getattr(jax, "enable_x64", None)
-    if context is None:
-        from jax.experimental import enable_x64 as context
-    return context(enabled)
-
 
 STEPS = 40
 # Both sides run MuJoCo's equations in float64; only the order of floating
@@ -41,17 +33,29 @@ TOLERANCE = 1e-9
 
 
 def gymnasium_steps(task_id, n_steps):
-    """(qpos, qvel, action, observation, reward, terminated) of each of
-    n_steps random steps in Gymnasium, restarting after a termination."""
+    """(start, action, observation, reward, terminated) of each of n_steps
+    random steps in Gymnasium, restarting after a termination. start holds
+    the state and the body positions the step's reward reads: Gymnasium
+    reads them as the previous step left them, computed before its last
+    physics substep, not from the state."""
     reference = gymnasium.make(task_id).unwrapped
+    if reference.model.opt.solver == mujoco.mjtSolver.mjSOL_PGS:
+        # Humanoid's models ask for PGS, which MJX lacks, so the tasks run
+        # with Newton's; the oracle for the translation is then Gymnasium on
+        # Newton too. (PGS against Newton is a solver difference, reported
+        # in the README, not something a task's code can change.)
+        reference.model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
     reference.reset(seed=0)
     random = np.random.default_rng(0)
     rows = []
     for episode in range(1, n_steps + 1):
-        qpos, qvel = reference.data.qpos.copy(), reference.data.qvel.copy()
+        start = [
+            getattr(reference.data, field).copy()
+            for field in ("qpos", "qvel", "xpos", "xipos")
+        ]
         action = random.uniform(reference.action_space.low, reference.action_space.high)
         observation, reward, terminated, _, _ = reference.step(action)
-        rows.append((qpos, qvel, action, observation, reward, terminated))
+        rows.append((start, action, observation, reward, terminated))
         if terminated:
             reference.reset(seed=episode)
     return rows
@@ -67,6 +71,11 @@ ONE_STEP_TOLERANCE = {
     # HalfCheetah and Walker2d reach 1.4e-4 (measured over 100 steps).
     "float32": 1e-3,
 }
+# Humanoid's observation carries contact and actuator forces of up to ~3000,
+# where float32's contact solver leaves up to 9e-4 of the value (measured
+# over 100 steps; Ant and the planar tasks stay under 5e-5): a relative
+# tolerance on top, for those two tasks in float32.
+FLOAT32_RELATIVE_TOLERANCE = {"Humanoid-v5": 3e-3, "HumanoidStandup-v5": 3e-3}
 
 
 @pytest.mark.parametrize("dtype", ["float64", "float32"])
@@ -74,21 +83,45 @@ ONE_STEP_TOLERANCE = {
 def test_one_step_from_gymnasiums_states_gives_gymnasiums_values(task_id, dtype):
     rows = gymnasium_steps(task_id, n_steps=100)
     tolerance = ONE_STEP_TOLERANCE[dtype]
+    relative = FLOAT32_RELATIVE_TOLERANCE.get(task_id, 0) if dtype == "float32" else 0
 
     with x64(dtype == "float64"):
         task = make(task_id)
         template = task.reset(jax.random.key(0))
 
         @jax.jit
-        def one_step(qpos, qvel, action):
-            state = template.replace(data=task.set_state(qpos, qvel))
-            return task.step(state, action)
+        def one_step(start, action):
+            qpos, qvel, xpos, xipos = start
+            data = task.set_state(qpos, qvel).replace(xpos=xpos, xipos=xipos)
+            return task.step(template.replace(data=data), action)
 
-        for qpos, qvel, action, observation, reward, terminated in rows:
-            state = one_step(*(jnp.asarray(value) for value in (qpos, qvel, action)))
-            np.testing.assert_allclose(state.obs, observation, rtol=0, atol=tolerance)
-            np.testing.assert_allclose(state.reward, reward, rtol=0, atol=tolerance)
+        for start, action, observation, reward, terminated in rows:
+            state = one_step([jnp.asarray(value) for value in start], action)
+            np.testing.assert_allclose(
+                state.obs, observation, rtol=relative, atol=tolerance
+            )
+            np.testing.assert_allclose(
+                state.reward, reward, rtol=relative, atol=tolerance
+            )
             assert bool(state.done) == terminated
+
+
+@pytest.mark.parametrize("task_id", sorted(TASKS))
+def test_a_reset_state_is_observed_as_gymnasium_observes_it(task_id):
+    """From the state of Gymnasium's reset, the task's observation is
+    Gymnasium's first one (free joints' quaternions included, which the
+    reset noise leaves unnormalised)."""
+    reference = gymnasium.make(task_id).unwrapped
+    first_observation, _ = reference.reset(seed=0)
+
+    with x64(True):
+        task = make(task_id)
+        data = task.set_state(
+            jnp.asarray(reference.data.qpos), jnp.asarray(reference.data.qvel)
+        )
+        observation = task.observe(data)
+
+    np.testing.assert_allclose(observation, first_observation, rtol=0, atol=TOLERANCE)
 
 
 HEALTH_CASES = [
@@ -122,6 +155,31 @@ def test_health_follows_gymnasiums_ranges(task_id, change, healthy):
     qvel = task.init_qvel.at[3].set(change.get("qvel3", 0.0))
 
     assert bool(task.is_healthy(task.set_state(qpos, qvel))) == healthy
+
+
+HEIGHT_CASES = [
+    # ant_v5: healthy while 0.2 <= z <= 1, both ends included.
+    ("Ant-v5", 0.2, True),
+    ("Ant-v5", 0.19, False),
+    ("Ant-v5", 1.0, True),
+    ("Ant-v5", 1.01, False),
+    # humanoid_v5: healthy while 1 < z < 2, both ends excluded.
+    ("Humanoid-v5", 1.0, False),
+    ("Humanoid-v5", 1.01, True),
+    ("Humanoid-v5", 1.99, True),
+    ("Humanoid-v5", 2.0, False),
+]
+
+
+@pytest.mark.parametrize("task_id, z, healthy", HEIGHT_CASES)
+def test_a_free_body_is_healthy_within_gymnasiums_heights(task_id, z, healthy):
+    task = make(task_id)
+    data = task.set_state(task.init_qpos.at[2].set(z), task.init_qvel)
+
+    _, terminated, terms = task.outcome(data, data, jnp.zeros(task.action_size))
+
+    assert bool(terminated) != healthy
+    assert bool(terms["reward_survive"] > 0) == healthy
 
 
 CONTACT_FREE = [
@@ -242,6 +300,17 @@ def test_inverted_double_pendulum_draws_normal_velocities_of_scale_0_1():
 
     assert np.all(np.abs(qpos - np.asarray(task.init_qpos)) <= 0.1)
     # The sample standard deviation's standard error is about sigma / sqrt(2n).
+    np.testing.assert_allclose(
+        qvel.std(axis=0), 0.1, atol=4 * 0.1 / np.sqrt(2 * SAMPLES)
+    )
+
+
+def test_ant_draws_uniform_positions_and_normal_velocities_of_scale_0_1():
+    """ant_v5: positions uniform within 0.1 of the initial ones, velocities
+    normal with standard deviation 0.1 (the uniform's would be 0.058)."""
+    task, qpos, qvel = resets("Ant-v5")
+
+    assert np.all(np.abs(qpos - np.asarray(task.init_qpos)) <= 0.1)
     np.testing.assert_allclose(
         qvel.std(axis=0), 0.1, atol=4 * 0.1 / np.sqrt(2 * SAMPLES)
     )
