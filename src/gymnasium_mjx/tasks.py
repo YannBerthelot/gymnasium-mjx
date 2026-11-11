@@ -1,9 +1,10 @@
 """Gymnasium's v5 MuJoCo tasks, stepped by MJX.
 
-Each task loads Gymnasium's own model file unchanged (assets/, Gymnasium 1.2.0,
-MIT licence) and translates the step, observation, reward, termination and
-reset of gymnasium/envs/mujoco/<task>_v5.py, with the same defaults and the
-same keyword arguments.
+Each task loads Gymnasium's own model file unchanged (assets/, Gymnasium
+1.2.0, MIT licence in LICENSES/Gymnasium.txt) and translates the step,
+observation, reward, termination and reset of
+gymnasium/envs/mujoco/<task>_v5.py, with the same defaults and the same
+keyword arguments.
 
 The random draws follow Gymnasium's distributions, not its generator's
 stream: a reset is a sample of the same initial-state distribution.

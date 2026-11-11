@@ -15,7 +15,8 @@ First release. Gymnasium's v5 MuJoCo tasks on MJX, moved out of Ajax
 - `gymnasium_mjx.playground.PlaygroundTask` (the `playground` extra): a task
   as a mujoco_playground environment, for Playground's wrappers.
 - `tools/drift.py` and `tools/same_policy.py`, the checks against Gymnasium
-  that the README reports.
+  that the README reports, and `tools/plot_curves.py`, which draws its
+  learning-curve figure.
 
 Upgrade notes for Ajax users: Ajax's `"mujoco:<id>"` ids are unchanged. The
 reset draws match Ajax's for the same key.
