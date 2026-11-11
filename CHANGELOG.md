@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.2.0
+
+All eleven of Gymnasium's v5 MuJoCo tasks.
+
+Upgrade notes: the contact change below moves results on the tasks with
+capsules on the floor (HalfCheetah, Hopper, Walker2d, Swimmer's and Pusher's
+contacts included): one step changes by at most 1e-10 on the planar tasks,
+where the old frame already matched C, but trajectories with contacts then
+drift apart, as between two MuJoCo builds. Runs compare across this version
+only statistically.
+
 - Ant-v5, Humanoid-v5 and HumanoidStandup-v5, with the contact forces
   (`cfrc_ext`) in their observations and costs. Humanoid's models ask for
   the PGS solver, which MJX lacks; they run with Newton's.

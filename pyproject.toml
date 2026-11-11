@@ -1,6 +1,6 @@
 [project]
 name = "gymnasium-mjx"
-version = "0.1.0"
+version = "0.2.0"
 description = "Gymnasium's v5 MuJoCo tasks, unchanged, stepped in JAX by MJX."
 readme = "README.md"
 license = "MIT"
