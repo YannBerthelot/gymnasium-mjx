@@ -76,6 +76,21 @@ ONE_STEP_TOLERANCE = {
 # over 100 steps; Ant and the planar tasks stay under 5e-5): a relative
 # tolerance on top, for those two tasks in float32.
 FLOAT32_RELATIVE_TOLERANCE = {"Humanoid-v5": 3e-3, "HumanoidStandup-v5": 3e-3}
+# A contact force's float32 error scales with the step's largest contact
+# force, not with the force itself: the solver solves all contacts together.
+# A small force beside large ones then misses the relative tolerance, and by
+# how much depends on the CPU's rounding (Humanoid's left foot, 0.86 next to
+# 222: off by 6e-4 on Apple M-series, 2.5e-3 on a Xeon E5 v4, 4.6e-3 on
+# flanders and CI). MJX float64 matches Gymnasium there to 1e-11 and 10x the
+# solver iterations leaves the float32 value unchanged, so this is float32
+# rounding, not a translation bug: the float64 test catches those. Measured
+# gaps stay under 1.1e-4 of the step's largest contact force; 3e-4 of it is
+# allowed on top. Entries: cfrc_ext[1:], the last 78 of 348.
+FLOAT32_CONTACT_FORCES = {
+    "Humanoid-v5": slice(270, 348),
+    "HumanoidStandup-v5": slice(270, 348),
+}
+FLOAT32_CONTACT_FORCE_SCALE = 3e-4
 
 
 @pytest.mark.parametrize("dtype", ["float64", "float32"])
@@ -97,9 +112,23 @@ def test_one_step_from_gymnasiums_states_gives_gymnasiums_values(task_id, dtype)
 
         for start, action, observation, reward, terminated in rows:
             state = one_step([jnp.asarray(value) for value in start], action)
+            ours = np.asarray(state.obs)
+            forces = FLOAT32_CONTACT_FORCES.get(task_id) if dtype == "float32" else None
+            if forces is None:
+                forces = slice(0, 0)
+            others = np.ones(observation.shape, bool)
+            others[forces] = False
             np.testing.assert_allclose(
-                state.obs, observation, rtol=relative, atol=tolerance
+                ours[others], observation[others], rtol=relative, atol=tolerance
             )
+            if observation[forces].size:
+                largest_force = np.abs(observation[forces]).max()
+                np.testing.assert_allclose(
+                    ours[forces],
+                    observation[forces],
+                    rtol=relative,
+                    atol=tolerance + FLOAT32_CONTACT_FORCE_SCALE * largest_force,
+                )
             np.testing.assert_allclose(
                 state.reward, reward, rtol=relative, atol=tolerance
             )
