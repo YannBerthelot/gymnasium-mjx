@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from gymnasium_mjx import make
 from gymnasium_mjx.base import stop_if_overflowed
 
 ROOM = 48
@@ -54,3 +55,11 @@ def test_one_world_out_of_constraint_rows_stops_a_batch():
 
     with pytest.raises(jax.errors.JaxRuntimeError, match="dropped constraints"):
         jax.block_until_ready(batch(rows))
+
+
+@pytest.mark.parametrize("task_id", ["Ant-v5", "Humanoid-v5", "HumanoidStandup-v5"])
+def test_tasks_reading_contact_forces_refuse_warp_up_front(task_id):
+    """Catches these tasks failing deep inside their first step on MuJoCo
+    Warp (MJX computes cfrc_ext on JAX only): the error comes at make."""
+    with pytest.raises(ValueError, match="physics='jax'"):
+        make(task_id, physics="warp")

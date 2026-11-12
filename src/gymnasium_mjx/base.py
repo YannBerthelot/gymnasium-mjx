@@ -114,6 +114,15 @@ class GymnasiumTask:
     contact_forces: bool = False
 
     def __init__(self, physics: str = "jax"):
+        if physics == "warp" and self.contact_forces:
+            # MJX's rne_postconstraint, which computes cfrc_ext, raises on
+            # MuJoCo Warp up to 4.0.1; MuJoCo's main branch adds a Warp option
+            # for it (opt.run_rne_postconstraint), after this package's range.
+            raise ValueError(
+                f"{type(self).__name__} reads the bodies' contact forces"
+                " (cfrc_ext), which MJX computes only on its JAX physics."
+                " Use physics='jax'."
+            )
         self.physics = physics
         self.xml_path = str(ASSETS / self.xml_file)
         self.mj_model = mujoco.MjModel.from_xml_path(self.xml_path)
