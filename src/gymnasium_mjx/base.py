@@ -181,31 +181,42 @@ class GymnasiumTask:
         )
 
     def physics_step(self, data: mjx.Data, action: jax.Array) -> mjx.Data:
-        def substep(data: mjx.Data, _: None) -> tuple[mjx.Data, None]:
+        def substep(carry: tuple, _: None) -> tuple[tuple, None]:
+            data, used = carry
             data = mjx.step(self.mjx_model, data.replace(ctrl=action))
-            # Each substep, since Warp's counters hold only the latest one.
-            self.check_warp_room(data)
-            return data, None
+            # Warp's counters hold only the latest substep: keep the most any
+            # substep used, and check once per step (a check per substep cost
+            # 11% on Hopper, against 2-4% once per step).
+            return (data, self.warp_room_used(data, used)), None
 
         with c_contacts():
-            data = jax.lax.scan(substep, data, None, self.frame_skip)[0]
+            carry = (data, self.warp_room_used(data))
+            data, used = jax.lax.scan(substep, carry, None, self.frame_skip)[0]
+        self.check_warp_room(data, used)
         if self.contact_forces:
             data = mjx.rne_postconstraint(self.mjx_model, data)
         return data
 
-    def check_warp_room(self, data: mjx.Data) -> None:
+    def warp_room_used(self, data: mjx.Data, most: tuple = ()) -> tuple:
+        """On MuJoCo Warp, the contact slots and constraint rows data's step
+        used, or the most used since most; nothing on the JAX physics."""
+        if self.physics != "warp":
+            return ()
+        warp = data._impl  # MJX's MuJoCo Warp fields: counters and capacities
+        used = (jnp.maximum(warp.nacon, warp.ncollision), warp.nefc)
+        if not most:
+            return used
+        return (jnp.maximum(used[0], most[0]), jnp.maximum(used[1], most[1]))
+
+    def check_warp_room(self, data: mjx.Data, used: tuple = ()) -> None:
         """On MuJoCo Warp, stop with an error when a physics step ran out of
         room: Warp drops the contacts or constraint rows that do not fit and
         goes on with wrong physics. The JAX physics has no such limit."""
         if self.physics != "warp":
             return
-        warp = data._impl  # MJX's MuJoCo Warp fields: counters and capacities
-        stop_if_overflowed(
-            jnp.maximum(warp.nacon, warp.ncollision),
-            warp.naconmax,
-            warp.nefc,
-            warp.njmax,
-        )
+        contacts, rows = used or self.warp_room_used(data)
+        warp = data._impl
+        stop_if_overflowed(contacts, warp.naconmax, rows, warp.njmax)
 
     def step(self, state: State, action: jax.Array) -> State:
         data = self.physics_step(state.data, action)
