@@ -1,201 +1,91 @@
 # gymnasium-mjx
 
-Gymnasium's v5 MuJoCo tasks, unchanged, stepped in JAX by
-[MJX](https://mujoco.readthedocs.io/en/stable/mjx.html). Each task loads
-Gymnasium's own model file and computes Gymnasium's observation, reward,
-termination, reset and time limit, so results are comparable with published
-numbers on Gymnasium's MuJoCo tasks, while the tasks run under `jit` and
-`vmap`, on CPU or GPU.
+Reproduces Gymnasium's v5 MuJoCo tasks in pure JAX, on
+[MJX](https://mujoco.readthedocs.io/en/stable/mjx.html), so that training
+runs end to end on the GPU: environment and agent compile into one program,
+and thousands of environments step at once.
 
 This is not a Farama Foundation project. The model files are Gymnasium's,
 under its MIT licence (`LICENSES/Gymnasium.txt`).
+
+## Why
+
+- **End-to-end JAX.** With a JAX agent, one jitted program steps the
+  environments and updates the agent: no Python between steps, no copies
+  between host and device, and `vmap` runs thousands of environments, or
+  several seeds, at once. A Python environment stops a JAX agent at every
+  step.
+- **The same tasks as the papers.** JAX training so far meant look-alike
+  tasks (Brax's, MuJoCo Playground's) with other models, rewards and
+  observations, whose returns cannot be compared with published Gymnasium
+  results. Here the model files are Gymnasium's, byte for byte, and the task
+  code is Gymnasium's, translated line by line.
 
 ## Install
 
 ```bash
 pip install gymnasium-mjx                 # jax, mujoco and mujoco-mjx only
 pip install "gymnasium-mjx[playground]"   # and the mujoco_playground adapter
+pip install "gymnasium-mjx[warp]"         # and MuJoCo Warp, on an NVIDIA GPU
 ```
 
-Python 3.12 or newer, MuJoCo 3.7 to 3.10. The range is deliberate: the aim
-is Gymnasium's tasks as its results were produced, so the package takes the
-MuJoCo versions on which MJX and C MuJoCo agree. From 3.11, C MuJoCo moves
-Reacher's first-joint velocity by up to 2e-8 after one step and MJX does not
-follow; newer versions come in once both agree again.
+Python 3.12 or newer, MuJoCo 3.7 to 3.15 (3.14 or newer for Ant and the
+Humanoids on MuJoCo Warp).
 
-## Use
+## Use it as Gymnasium
+
+The same task ids and keyword arguments as `gymnasium.make`. The state is
+passed in and returned, as JAX needs:
+
+```python
+# doc: skip (two columns side by side)
+# Gymnasium                                   # gymnasium-mjx
+env = gymnasium.make("Hopper-v5")             task = gymnasium_mjx.make("Hopper-v5")
+obs, info = env.reset(seed=0)                 state = task.reset(jax.random.key(0))
+obs, reward, terminated, truncated, info = \  state = task.step(state, action)
+    env.step(action)                          # state.obs, state.reward, state.done
+```
+
+`state.done` is the termination; the time limit, `task.episode_length`, is
+the caller's to apply, as Gymnasium's `TimeLimit` wrapper does. Many
+environments at once are a `vmap`, and the whole step can be jitted:
 
 ```python
 import jax
-import jax.numpy as jnp
+import gymnasium_mjx
 
-from gymnasium_mjx import make
-
-task = make("Hopper-v5")  # Gymnasium's keyword arguments work too
-state = task.reset(jax.random.key(0))
-step = jax.jit(task.step)
-for _ in range(10):
-    state = step(state, jnp.zeros(task.action_size))
-print(state.obs.shape, state.reward, state.done, task.episode_length)
-```
-
-`state.done` is the termination. The time limit is the caller's to apply,
-as Gymnasium's `TimeLimit` wrapper does: `task.episode_length` holds
-Gymnasium's (1000 steps, Reacher 50, Pusher 100). `state.metrics` holds the
-reward terms of the step, under Gymnasium's names.
-
-Many tasks at once are a `vmap`:
-
-```python
-import jax
-
-from gymnasium_mjx import make
-
-task = make("HalfCheetah-v5")
-states = jax.vmap(task.reset)(jax.random.split(jax.random.key(0), 64))
-actions = jax.numpy.zeros((64, task.action_size))
+task = gymnasium_mjx.make("Hopper-v5")
+states = jax.vmap(task.reset)(jax.random.split(jax.random.key(0), 4096))
+actions = jax.numpy.zeros((4096, task.action_size))
 states = jax.jit(jax.vmap(task.step))(states, actions)
-```
-
-With the `playground` extra, `PlaygroundTask` presents a task as a
-mujoco_playground environment, for Playground's wrappers (time limit,
-auto-reset) and the libraries built on them, such as Brax's training and
-Ajax:
-
-```python
-import jax
-
-from mujoco_playground import wrapper
-
-from gymnasium_mjx import make
-from gymnasium_mjx.playground import PlaygroundTask
-
-task = make("Reacher-v5")
-env = wrapper.wrap_for_brax_training(
-    PlaygroundTask(task), episode_length=task.episode_length
-)
-# Playground's wrappers read the batch size off raw (uint32) keys.
-states = env.reset(jax.random.split(jax.random.PRNGKey(0), 8))
 ```
 
 ## Tasks
 
-| Id | Episode length | Contacts |
-|---|---|---|
-| InvertedPendulum-v5 | 1000 | no |
-| InvertedDoublePendulum-v5 | 1000 | no |
-| Reacher-v5 | 50 | no |
-| Swimmer-v5 | 1000 | no |
-| HalfCheetah-v5 | 1000 | yes |
-| Hopper-v5 | 1000 | yes |
-| Walker2d-v5 | 1000 | yes |
-| Pusher-v5 | 100 | yes |
-| Ant-v5 | 1000 | yes |
-| Humanoid-v5 | 1000 | yes |
-| HumanoidStandup-v5 | 1000 | yes |
+| Id | Contacts | Id | Contacts |
+|---|---|---|---|
+| InvertedPendulum-v5 | no | Hopper-v5 | yes |
+| InvertedDoublePendulum-v5 | no | Walker2d-v5 | yes |
+| Reacher-v5 | no | Pusher-v5 | yes |
+| Swimmer-v5 | no | Ant-v5 | yes |
+| HalfCheetah-v5 | yes | Humanoid-v5 | yes |
+| | | HumanoidStandup-v5 | yes |
 
-The random draws follow Gymnasium's distributions, not its generator's
-stream: a reset is a sample of the same initial-state distribution, not the
-same sample for the same seed.
+## How close to Gymnasium, and how fast
 
-## Where MJX and C MuJoCo differ
+- One step from the same state gives Gymnasium's observation, reward and
+  termination to 1e-8 in float64, on every task.
+- The same trained policy, and the same agent trained from scratch, score
+  the same on both sides, on the tasks measured so far (learning curves in
+  [docs/checks.md](docs/checks.md#learning-curves)).
+- Where MJX and C MuJoCo still differ, and by how much:
+  [docs/differences.md](docs/differences.md).
 
-Gymnasium runs on MuJoCo's C library; MJX departs from it in two places
-these tasks meet.
+<!-- TODO: speed, from tools/speed.py on a GPU host: steps per second at
+1, 256 and 4096 environments, Gymnasium against gymnasium-mjx. -->
 
-- **Contacts of capsules.** For a capsule on a plane, MJX orients the
-  friction pyramid along a fixed axis once the capsule stands more than 60
-  degrees from the plane, where C MuJoCo follows the capsule; for a sphere
-  or a capsule on a capsule, it moves the contact normal by up to 7e-3. With
-  these, one Ant step differed by up to 0.9 in velocity and one Humanoid
-  step by 2e-4. The package replaces those three colliders with C MuJoCo's
-  rules while its tasks trace MJX (`gymnasium_mjx/contact.py`), so the
-  contacts match C's to 1e-14; other users of MJX in the same process are
-  untouched. One case is left: two capsules within a few millionths of a
-  radian of parallel get two contacts in C and one here.
-- **No PGS solver.** Humanoid and HumanoidStandup's models ask for PGS,
-  which MJX lacks, so they run with Newton's. Both solve the same problem;
-  PGS stops at its 50 iterations before converging, and after one step the
-  two differ by up to 3e-4 in velocity.
-
-## How it differs from Brax's MuJoCo tasks
-
-Brax's tasks (checked in brax 0.14.2 against Gymnasium 1.2.0) are a separate
-benchmark, and their results are not comparable with Gymnasium's:
-
-- the model files are rewritten: Euler integration instead of RK4, most
-  contacts disabled, Humanoid's tendons removed, Walker2d's right foot
-  friction 0.9 instead of 1.9, Pusher's object density 1 instead of 0.01;
-- there are no contact forces in observations or costs;
-- some tasks differ outright: InvertedDoublePendulum's time step (0.02
-  instead of 0.05) and velocity noise (0.01 instead of 0.1),
-  HumanoidStandup's height reward, Reacher's observation and goal draw;
-- the default physics is Brax's own, not MuJoCo's solver.
-
-gymnasium-mjx keeps Gymnasium's model files byte for byte and MuJoCo's
-solver (through MJX), and translates each task's code line by line.
-
-## How it is checked
-
-Gymnasium itself, on MuJoCo's C library, is the reference.
-
-- **One step** (`tests/`). From 100 states Gymnasium reaches under random
-  actions, one step gives Gymnasium's observation, reward and termination:
-  the largest gap measured is 1.5e-10 in float64 (tolerance 1e-8), and
-  1.4e-4 in float32 (tolerance 1e-3; the contact solver stops earlier;
-  Humanoid's forces of thousands differ by up to 9e-4 of their size).
-  Humanoid and HumanoidStandup are compared with Gymnasium switched to
-  Newton's solver, as they run here.
-- **Contacts** (`tests/`). On random poses, each pair of geometries the
-  tasks put in contact gives C MuJoCo's contacts to 1e-12.
-- **Whole episodes without contacts** (`tests/`). The four contact-free
-  tasks follow Gymnasium's trajectory for 40 steps within 1e-9 in float64.
-  With contacts, gaps of 1e-15 grow along a trajectory, as between any two
-  MuJoCo builds, so `tools/drift.py` reports how far and how fast instead.
-- **Resets** (`tests/`): the first observation from Gymnasium's reset state,
-  and the initial-state distributions' bounds and moments.
-- **The same policy** (`tools/same_policy.py`). An RL Zoo SAC actor runs on
-  both sides for 100 episodes each; the mean returns are equivalent within
-  ±2% (two one-sided tests at 5%) on HalfCheetah, Swimmer, Walker2d and
-  Hopper.
-- **Learning curves** (below): the same agent learns the same on both sides.
-
-### Learning curves
-
-SAC ([Ajax](https://github.com/YannBerthelot/Ajax)'s, same settings and
-seeds) trained for 1M steps on Gymnasium and on gymnasium-mjx. Mean
-evaluation return with a 95% band:
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/YannBerthelot/gymnasium-mjx/main/docs/curves-dark.png">
-  <img alt="SAC learning curves on Gymnasium and gymnasium-mjx: HalfCheetah, Hopper and Swimmer overlap" src="https://raw.githubusercontent.com/YannBerthelot/gymnasium-mjx/main/docs/curves-light.png">
-</picture>
-
-Final return, the mean of each seed's last 10 evaluations (the last 100k steps):
-
-| Task | Seeds | Gymnasium | gymnasium-mjx | Difference (90% CI) |
-|---|---|---|---|---|
-| HalfCheetah-v5 | 20 / 20 | 10,438 | 10,624 | +1.8% (−2.0% to +5.6%) |
-| Hopper-v5 | 20 / 5 | 2,897 | 3,215 | +11.0% (−1.0% to +22.9%) |
-| Swimmer-v5 | 20 / 5 | 75 | 70 | −5.6% (−19.2% to +8.0%) |
-
-Every interval contains zero. Ant, Humanoid and HumanoidStandup have no
-curves yet. With 5 seeds on the MJX side, Hopper and
-Swimmer's intervals are still wide; their 20-seed runs and Walker2d's are in
-progress. The training script is Ajax's `benchmarks/mujoco_curves.py` (it
-needs an agent); `tools/plot_curves.py` draws the figure and the table from
-its output.
-
-## Tools
-
-```bash
-uv run python tools/drift.py --episodes 10 --dtype float32
-uv run python tools/same_policy.py --weights sac-Hopper-v3.npz --task Hopper-v5
-```
-
-Both need Gymnasium (`pip install "gymnasium[mujoco]"`). `same_policy.py`
-reads an RL Zoo SAC actor (`sb3/sac-<task>-v3` on Hugging Face) saved as
-plain arrays under its PyTorch parameter names.
+All checks, the learning curves, the speed method and the tools:
+[docs/checks.md](docs/checks.md).
 
 ## Development
 
