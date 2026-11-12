@@ -32,13 +32,21 @@ STEPS = 40
 TOLERANCE = 1e-9
 
 
-def gymnasium_steps(task_id, n_steps):
+def gymnasium_steps(task_id, n_steps, solve_to_convergence=False):
     """(start, action, observation, reward, terminated) of each of n_steps
     random steps in Gymnasium, restarting after a termination. start holds
     the state and the body positions the step's reward reads: Gymnasium
     reads them as the previous step left them, computed before its last
     physics substep, not from the state."""
     reference = gymnasium.make(task_id).unwrapped
+    if solve_to_convergence:
+        # From MuJoCo 3.11, C's Newton solver stops once its Newton decrement
+        # or duality gap is below opt.tolerance (commits 1e66efd11,
+        # c69ef0308), within 1e-8 of the solution but not on it; MJX solves
+        # on. At tolerance 0, C reaches MJX's values (Reacher: 4e-15 apart,
+        # against 1.9e-8 at the default), so the float64 check stays a check
+        # of the translation.
+        reference.model.opt.tolerance = 0.0
     if reference.model.opt.solver == mujoco.mjtSolver.mjSOL_PGS:
         # Humanoid's models ask for PGS, which MJX lacks, so the tasks run
         # with Newton's; the oracle for the translation is then Gymnasium on
@@ -93,15 +101,38 @@ FLOAT32_CONTACT_FORCES = {
 FLOAT32_CONTACT_FORCE_SCALE = 3e-4
 
 
-@pytest.mark.parametrize("dtype", ["float64", "float32"])
+def warp_runs_here() -> bool:
+    """MuJoCo Warp needs warp-lang and an NVIDIA GPU that JAX uses (the tests
+    run on CPU unless JAX_PLATFORMS says otherwise)."""
+    try:
+        import warp  # noqa: F401
+    except ImportError:
+        return False
+    return any(device.platform == "gpu" for device in jax.devices())
+
+
+WARP = pytest.mark.skipif(not warp_runs_here(), reason="needs MuJoCo Warp on a GPU")
+# MuJoCo Warp computes in float32 only.
+PHYSICS_AND_DTYPES = [
+    ("jax", "float64"),
+    ("jax", "float32"),
+    pytest.param("warp", "float32", marks=WARP),
+]
+
+
+@pytest.mark.parametrize("physics, dtype", PHYSICS_AND_DTYPES)
 @pytest.mark.parametrize("task_id", sorted(TASKS))
-def test_one_step_from_gymnasiums_states_gives_gymnasiums_values(task_id, dtype):
-    rows = gymnasium_steps(task_id, n_steps=100)
+def test_one_step_from_gymnasiums_states_gives_gymnasiums_values(
+    task_id, physics, dtype
+):
+    rows = gymnasium_steps(
+        task_id, n_steps=100, solve_to_convergence=dtype == "float64"
+    )
     tolerance = ONE_STEP_TOLERANCE[dtype]
     relative = FLOAT32_RELATIVE_TOLERANCE.get(task_id, 0) if dtype == "float32" else 0
 
     with x64(dtype == "float64"):
-        task = make(task_id)
+        task = make(task_id, physics=physics)
         template = task.reset(jax.random.key(0))
 
         @jax.jit
@@ -135,22 +166,27 @@ def test_one_step_from_gymnasiums_states_gives_gymnasiums_values(task_id, dtype)
             assert bool(state.done) == terminated
 
 
+@pytest.mark.parametrize("physics, dtype", [("jax", "float64"), ("warp", "float32")])
 @pytest.mark.parametrize("task_id", sorted(TASKS))
-def test_a_reset_state_is_observed_as_gymnasium_observes_it(task_id):
+def test_a_reset_state_is_observed_as_gymnasium_observes_it(task_id, physics, dtype):
     """From the state of Gymnasium's reset, the task's observation is
     Gymnasium's first one (free joints' quaternions included, which the
-    reset noise leaves unnormalised)."""
+    reset noise leaves unnormalised; contact forces zero, as mj_forward
+    leaves them)."""
+    if physics == "warp" and not warp_runs_here():
+        pytest.skip("needs MuJoCo Warp on a GPU")
     reference = gymnasium.make(task_id).unwrapped
     first_observation, _ = reference.reset(seed=0)
 
-    with x64(True):
-        task = make(task_id)
+    with x64(dtype == "float64"):
+        task = make(task_id, physics=physics)
         data = task.set_state(
             jnp.asarray(reference.data.qpos), jnp.asarray(reference.data.qvel)
         )
         observation = task.observe(data)
 
-    np.testing.assert_allclose(observation, first_observation, rtol=0, atol=TOLERANCE)
+    tolerance = TOLERANCE if dtype == "float64" else ONE_STEP_TOLERANCE["float32"]
+    np.testing.assert_allclose(observation, first_observation, rtol=0, atol=tolerance)
 
 
 HEALTH_CASES = [
