@@ -19,6 +19,15 @@ ASSETS = Path(__file__).parent / "assets"
 #: split or an index fold (which count up from 0) hands out.
 NAMED_TAG_BIT = 0x80000000
 
+#: MuJoCo Warp's contact buffer (physics="warp"), one for every world that a
+#: program steps at once (vmapped environments and seeds share it). Without
+#: it, MuJoCo Warp's default for these models is 48 contacts in all: 47
+#: Hopper worlds overflowed it, and MuJoCo Warp then drops contacts silently.
+#: Room for 1,024 worlds of 48 contacts each (MuJoCo Warp's default for one
+#: world), the value Ajax uses and near the 50,000 Playground gives its
+#: locomotion tasks. The JAX physics ignores it.
+WARP_CONTACTS = 48 * 1024
+
 
 def derive_key(key: jax.Array, name: str) -> jax.Array:
     """The key named name, off key. A draw keyed by its name moves no other
@@ -94,7 +103,7 @@ class GymnasiumTask:
 
     def set_state(self, qpos: jax.Array, qvel: jax.Array) -> mjx.Data:
         """Gymnasium's set_state: the state, then mj_forward."""
-        data = mjx.make_data(self.mj_model, impl=self.physics)
+        data = mjx.make_data(self.mj_model, impl=self.physics, naconmax=WARP_CONTACTS)
         with c_contacts():
             data = mjx.forward(self.mjx_model, data.replace(qpos=qpos, qvel=qvel))
         # MJX's forward writes free joints' quaternions back normalised; C
