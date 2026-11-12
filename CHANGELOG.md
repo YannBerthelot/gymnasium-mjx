@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- MuJoCo 3.11 to 3.15 too (was 3.7 to 3.10). From 3.11, C MuJoCo's Newton
+  solver stops once it is within `opt.tolerance` of the solution, so
+  Gymnasium's own steps sit up to 4e-8 from MJX's (measured on Reacher and
+  HumanoidStandup); MJX solves on.
+- Ant, Humanoid and HumanoidStandup run on MuJoCo Warp (`physics="warp"`)
+  from MuJoCo 3.14, which computes their contact forces after each step.
+  Below 3.14 they refuse Warp and say to upgrade.
+- On MuJoCo Warp, C MuJoCo's tangent for a capsule on a plane, a deliberate
+  workaround while MuJoCo Warp falls back to a fixed axis on capsules
+  steeper than 60° (Ant's legs moved by up to 1.4 in velocity). Applied on
+  MuJoCo 3.14 and 3.15 only; elsewhere it warns and Ant refuses Warp.
+- A `warp` extra, and the `playground` extra now installs the warp-lang
+  that the installed MJX release was built against: MJX imports warp-lang
+  when present, and another version fails at import.
+
 ## 0.2.0
 
 All eleven of Gymnasium's v5 MuJoCo tasks.

@@ -11,6 +11,7 @@ ajax-scratch/records/gpu-speed-2026-11-12.
 
 import jax
 import jax.numpy as jnp
+import mujoco
 import pytest
 
 from gymnasium_mjx import make
@@ -57,9 +58,13 @@ def test_one_world_out_of_constraint_rows_stops_a_batch():
         jax.block_until_ready(batch(rows))
 
 
+@pytest.mark.skipif(
+    mujoco.mj_version() >= 3_014_000, reason="MuJoCo Warp computes cfrc_ext from 3.14"
+)
 @pytest.mark.parametrize("task_id", ["Ant-v5", "Humanoid-v5", "HumanoidStandup-v5"])
-def test_tasks_reading_contact_forces_refuse_warp_up_front(task_id):
+def test_tasks_reading_contact_forces_refuse_warp_before_3_14(task_id):
     """Catches these tasks failing deep inside their first step on MuJoCo
-    Warp (MJX computes cfrc_ext on JAX only): the error comes at make."""
-    with pytest.raises(ValueError, match="physics='jax'"):
+    Warp before 3.14 (MJX computes cfrc_ext on JAX only): the error comes at
+    make, and says to upgrade."""
+    with pytest.raises(ValueError, match="upgrade mujoco"):
         make(task_id, physics="warp")

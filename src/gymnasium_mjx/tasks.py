@@ -453,6 +453,7 @@ class Ant(GymnasiumTask):
     xml_file = "ant.xml"
     frame_skip = 5
     contact_forces = True
+    steep_capsules_on_plane = True
 
     def __init__(
         self,
