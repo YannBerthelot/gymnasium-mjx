@@ -8,15 +8,17 @@ than 0.5 (the capsule more than 60 degrees from the plane); C MuJoCo keeps it
 unless it vanishes (shorter than mjMINVAL: then the x axis). With a pyramidal
 friction cone the tangent turns the contact forces: Ant's legs stand that
 steep, and one step on MuJoCo Warp 3.15 moved Ant's velocities by up to 1.4.
-The same bug in MJX's JAX physics is MuJoCo PR #3863.
+Reported as google-deepmind/mujoco_warp#1949, fixed by
+google-deepmind/mujoco_warp#1950; the same bug in MJX's JAX physics is
+google-deepmind/mujoco#3863.
 
 The narrowphase kernel calls plane_capsule by its name in Warp's
 collision_primitive module, resolved when Warp builds the kernel, so this
 rebinds that name before the first build. Warp keys its compiled kernels by
 the source of the functions they call, so neither the patched nor the
 original kernel is reused for the other. Applied only on the MuJoCo versions
-checked against C MuJoCo (CHECKED_RELEASES); remove it once MuJoCo Warp
-follows C.
+checked against C MuJoCo (CHECKED_RELEASES); remove it once a MuJoCo
+release bundles mujoco_warp#1950.
 """
 
 import warnings
