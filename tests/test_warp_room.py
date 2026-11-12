@@ -53,7 +53,7 @@ def test_one_world_out_of_constraint_rows_stops_a_batch():
         stop_if_overflowed(jnp.asarray(0), jnp.asarray(ROOM), rows, jnp.asarray(ROOM))
         return rows
 
-    with pytest.raises(jax.errors.JaxRuntimeError, match="dropped constraints"):
+    with pytest.raises(jax.errors.JaxRuntimeError, match="needed 49 constraint"):
         jax.block_until_ready(batch(rows))
 
 

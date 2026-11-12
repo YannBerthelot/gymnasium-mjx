@@ -59,6 +59,8 @@ def stop_if_overflowed(
 
 
 def raise_overflow(contacts, contact_room, rows, row_room) -> None:
+    # Under vmap, the callback runs once per world: only a world that ran
+    # out of room raises, with its own counts.
     if np.max(contacts) > np.min(contact_room):
         raise ValueError(
             f"MuJoCo Warp dropped contacts: a step needed {np.max(contacts)}"
@@ -66,11 +68,12 @@ def raise_overflow(contacts, contact_room, rows, row_room) -> None:
             f" {np.min(contact_room)}. Step fewer environments at once, or use"
             " physics='jax'."
         )
-    raise ValueError(
-        f"MuJoCo Warp dropped constraints: a world needed {np.max(rows)}"
-        f" constraint rows and has room for {np.min(row_room)}. Use"
-        " physics='jax'."
-    )
+    if np.max(rows) > np.min(row_room):
+        raise ValueError(
+            f"MuJoCo Warp dropped constraints: a world needed {np.max(rows)}"
+            f" constraint rows and has room for {np.min(row_room)}. Use"
+            " physics='jax'."
+        )
 
 
 def cfrc_ext(data: mjx.Data) -> jax.Array:
