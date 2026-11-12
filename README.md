@@ -90,15 +90,33 @@ states = env.reset(jax.random.split(jax.random.PRNGKey(0), 8))
 | Hopper-v5 | 1000 | yes |
 | Walker2d-v5 | 1000 | yes |
 | Pusher-v5 | 100 | yes |
-
-Ant, Humanoid and HumanoidStandup are not here yet. They need contact forces
-in the observation, and MJX has no PGS solver, which Humanoid's v5 model
-uses, so those two will run with Newton's: the same task, not the same
-dynamics to the last digit.
+| Ant-v5 | 1000 | yes |
+| Humanoid-v5 | 1000 | yes |
+| HumanoidStandup-v5 | 1000 | yes |
 
 The random draws follow Gymnasium's distributions, not its generator's
 stream: a reset is a sample of the same initial-state distribution, not the
 same sample for the same seed.
+
+## Where MJX and C MuJoCo differ
+
+Gymnasium runs on MuJoCo's C library; MJX departs from it in two places
+these tasks meet.
+
+- **Contacts of capsules.** For a capsule on a plane, MJX orients the
+  friction pyramid along a fixed axis once the capsule stands more than 60
+  degrees from the plane, where C MuJoCo follows the capsule; for a sphere
+  or a capsule on a capsule, it moves the contact normal by up to 7e-3. With
+  these, one Ant step differed by up to 0.9 in velocity and one Humanoid
+  step by 2e-4. The package replaces those three colliders with C MuJoCo's
+  rules while its tasks trace MJX (`gymnasium_mjx/contact.py`), so the
+  contacts match C's to 1e-14; other users of MJX in the same process are
+  untouched. One case is left: two capsules within a few millionths of a
+  radian of parallel get two contacts in C and one here.
+- **No PGS solver.** Humanoid and HumanoidStandup's models ask for PGS,
+  which MJX lacks, so they run with Newton's. Both solve the same problem;
+  PGS stops at its 50 iterations before converging, and after one step the
+  two differ by up to 3e-4 in velocity.
 
 ## How it differs from Brax's MuJoCo tasks
 
@@ -124,12 +142,18 @@ Gymnasium itself, on MuJoCo's C library, is the reference.
 - **One step** (`tests/`). From 100 states Gymnasium reaches under random
   actions, one step gives Gymnasium's observation, reward and termination:
   the largest gap measured is 1.5e-10 in float64 (tolerance 1e-8), and
-  1.4e-4 in float32 (tolerance 1e-3; the contact solver stops earlier).
+  1.4e-4 in float32 (tolerance 1e-3; the contact solver stops earlier;
+  Humanoid's forces of thousands differ by up to 9e-4 of their size).
+  Humanoid and HumanoidStandup are compared with Gymnasium switched to
+  Newton's solver, as they run here.
+- **Contacts** (`tests/`). On random poses, each pair of geometries the
+  tasks put in contact gives C MuJoCo's contacts to 1e-12.
 - **Whole episodes without contacts** (`tests/`). The four contact-free
   tasks follow Gymnasium's trajectory for 40 steps within 1e-9 in float64.
   With contacts, gaps of 1e-15 grow along a trajectory, as between any two
   MuJoCo builds, so `tools/drift.py` reports how far and how fast instead.
-- **Resets** (`tests/`): the initial-state distributions' bounds and moments.
+- **Resets** (`tests/`): the first observation from Gymnasium's reset state,
+  and the initial-state distributions' bounds and moments.
 - **The same policy** (`tools/same_policy.py`). An RL Zoo SAC actor runs on
   both sides for 100 episodes each; the mean returns are equivalent within
   ±2% (two one-sided tests at 5%) on HalfCheetah, Swimmer, Walker2d and
@@ -155,7 +179,8 @@ Final return, the mean of each seed's last 10 evaluations (the last 100k steps):
 | Hopper-v5 | 20 / 5 | 2,897 | 3,215 | +11.0% (−1.0% to +22.9%) |
 | Swimmer-v5 | 20 / 5 | 75 | 70 | −5.6% (−19.2% to +8.0%) |
 
-Every interval contains zero. With 5 seeds on the MJX side, Hopper and
+Every interval contains zero. Ant, Humanoid and HumanoidStandup have no
+curves yet. With 5 seeds on the MJX side, Hopper and
 Swimmer's intervals are still wide; their 20-seed runs and Walker2d's are in
 progress. The training script is Ajax's `benchmarks/mujoco_curves.py` (it
 needs an agent); `tools/plot_curves.py` draws the figure and the table from
