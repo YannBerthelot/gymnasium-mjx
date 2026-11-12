@@ -9,6 +9,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import mujoco
+import numpy as np
 from mujoco import mjx
 
 from gymnasium_mjx.contact import c_contacts
@@ -35,6 +36,41 @@ def derive_key(key: jax.Array, name: str) -> jax.Array:
     the top bit set: the same in every process (Python's hash is salted per
     process), and the same as Ajax's derive_key, so the draws match it."""
     return jax.random.fold_in(key, zlib.crc32(name.encode()) | NAMED_TAG_BIT)
+
+
+def stop_if_overflowed(
+    contacts: jax.Array, contact_room: jax.Array, rows: jax.Array, row_room: jax.Array
+) -> None:
+    """Raises, when the jitted program runs, if a step needed more contact
+    slots than the buffer every world shares, or a world more constraint rows
+    than it has room for. Works under vmap and jit."""
+    overflowed = (jnp.max(contacts) > jnp.min(contact_room)) | (
+        jnp.max(rows) > jnp.min(row_room)
+    )
+
+    def report(pending: jax.Array) -> jax.Array:
+        jax.debug.callback(raise_overflow, contacts, contact_room, rows, row_room)
+        return jnp.zeros_like(pending)
+
+    # A host callback on every step cost Ajax's SAC 38% of its speed and PPO
+    # 63%; this while_loop runs it only on a step that overflowed (batched, it
+    # loops while any world's flag holds).
+    jax.lax.while_loop(lambda pending: pending, report, overflowed)
+
+
+def raise_overflow(contacts, contact_room, rows, row_room) -> None:
+    if np.max(contacts) > np.min(contact_room):
+        raise ValueError(
+            f"MuJoCo Warp dropped contacts: a step needed {np.max(contacts)}"
+            f" contact slots, and the buffer every world shares holds"
+            f" {np.min(contact_room)}. Step fewer environments at once, or use"
+            " physics='jax'."
+        )
+    raise ValueError(
+        f"MuJoCo Warp dropped constraints: a world needed {np.max(rows)}"
+        f" constraint rows and has room for {np.min(row_room)}. Use"
+        " physics='jax'."
+    )
 
 
 def cfrc_ext(data: mjx.Data) -> jax.Array:
@@ -106,6 +142,7 @@ class GymnasiumTask:
         data = mjx.make_data(self.mj_model, impl=self.physics, naconmax=WARP_CONTACTS)
         with c_contacts():
             data = mjx.forward(self.mjx_model, data.replace(qpos=qpos, qvel=qvel))
+        self.check_warp_room(data)
         # MJX's forward writes free joints' quaternions back normalised; C
         # MuJoCo's leaves qpos as set, and Gymnasium's reset observation shows
         # the noisy, unnormalised quaternion.
@@ -136,13 +173,30 @@ class GymnasiumTask:
 
     def physics_step(self, data: mjx.Data, action: jax.Array) -> mjx.Data:
         def substep(data: mjx.Data, _: None) -> tuple[mjx.Data, None]:
-            return mjx.step(self.mjx_model, data.replace(ctrl=action)), None
+            data = mjx.step(self.mjx_model, data.replace(ctrl=action))
+            # Each substep, since Warp's counters hold only the latest one.
+            self.check_warp_room(data)
+            return data, None
 
         with c_contacts():
             data = jax.lax.scan(substep, data, None, self.frame_skip)[0]
         if self.contact_forces:
             data = mjx.rne_postconstraint(self.mjx_model, data)
         return data
+
+    def check_warp_room(self, data: mjx.Data) -> None:
+        """On MuJoCo Warp, stop with an error when a physics step ran out of
+        room: Warp drops the contacts or constraint rows that do not fit and
+        goes on with wrong physics. The JAX physics has no such limit."""
+        if self.physics != "warp":
+            return
+        warp = data._impl  # MJX's MuJoCo Warp fields: counters and capacities
+        stop_if_overflowed(
+            jnp.maximum(warp.nacon, warp.ncollision),
+            warp.naconmax,
+            warp.nefc,
+            warp.njmax,
+        )
 
     def step(self, state: State, action: jax.Array) -> State:
         data = self.physics_step(state.data, action)
