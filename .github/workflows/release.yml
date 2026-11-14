@@ -87,8 +87,9 @@ jobs:
           if-no-files-found: error
 
   # The wheel in a fresh environment outside the checkout, on the oldest and
-  # the newest supported Python: each install steps every task, and the one
-  # with the playground extra also runs the README's examples.
+  # the newest supported Python: each install steps every task, the one with
+  # the playground extra also runs the README's examples, and the one with
+  # the warp extra steps a task on MuJoCo Warp.
   installed:
     name: Installed package (${{ matrix.extra }}, ${{ matrix.python }})
     needs: [check, build]
@@ -98,7 +99,7 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.12", "3.14"]
-        extra: [core, playground]
+        extra: [core, playground, warp]
     env:
       JAX_PLATFORMS: cpu
     steps:
@@ -140,6 +141,16 @@ jobs:
           '
       - if: matrix.extra == 'playground'
         run: python tests/test_readme.py README.md
+      # MJX runs Warp's kernels on a CPU when a task is made directly.
+      - if: matrix.extra == 'warp'
+        name: A step on MuJoCo Warp
+        run: |
+          python -c '
+          import jax, gymnasium_mjx
+          task = gymnasium_mjx.make("Hopper-v5", physics="warp")
+          state = task.step(task.reset(jax.random.key(0)), jax.numpy.zeros(task.action_size))
+          assert bool(jax.numpy.isfinite(state.obs).all())
+          '
 
   tag:
     needs: [check, installed]
