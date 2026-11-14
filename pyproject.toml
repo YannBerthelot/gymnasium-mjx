@@ -15,21 +15,27 @@ classifiers = [
 # jax: register_dataclass without field lists. mujoco and mujoco-mjx move
 # together (MJX X.Y needs MuJoCo X.Y). The range is deliberate: the package
 # reproduces Gymnasium's tasks, so it takes the MuJoCo versions on which MJX
-# and C MuJoCo agree. From 3.11, C MuJoCo moves Reacher's first-joint
-# velocity by up to 2e-8 after one step and MJX does not follow; MJX 3.6
-# fails on current jax (jnp.clip's a_min). tests/test_tasks.py checks the
-# agreement before a bound moves.
+# and C MuJoCo agree. 3.16 rewrote C's capsule-capsule contact, which
+# contact.py matches up to 3.15; MuJoCo Warp computes contact forces from
+# 3.14; MJX 3.6 fails on current jax (jnp.clip's a_min). tests/test_tasks.py
+# checks the agreement before a bound moves.
 dependencies = [
     "jax>=0.5",
-    "mujoco>=3.7,<3.11",
-    "mujoco-mjx>=3.7,<3.11",
+    "mujoco>=3.7,<3.16",
+    "mujoco-mjx>=3.7,<3.16",
 ]
 
 [project.optional-dependencies]
 # PlaygroundTask, for Playground's wrappers and the libraries built on them.
 # The one ceiling: playground 1.0 is a different library (torch, warp) with
 # no MjxEnv to adapt to.
-playground = ["playground>=0.2.0,<1"]
+#
+# mujoco-mjx[warp]: the warp-lang its release was built against. MJX imports
+# warp-lang whenever it is installed (Playground pulls it in), and a release
+# with another warp-lang fails at import (3.15 with 1.12).
+playground = ["playground>=0.2.0,<1", "mujoco-mjx[warp]"]
+# MuJoCo Warp, MJX's GPU physics: make(task_id, physics="warp").
+warp = ["mujoco-mjx[warp]"]
 
 [project.urls]
 Changelog = "https://github.com/YannBerthelot/gymnasium-mjx/blob/main/CHANGELOG.md"

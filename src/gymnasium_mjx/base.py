@@ -13,6 +13,7 @@ import numpy as np
 from mujoco import mjx
 
 from gymnasium_mjx.contact import c_contacts
+from gymnasium_mjx.warp_contact import patch_warp_plane_capsule
 
 ASSETS = Path(__file__).parent / "assets"
 
@@ -78,7 +79,7 @@ def raise_overflow(contacts, contact_room, rows, row_room) -> None:
 
 def cfrc_ext(data: mjx.Data) -> jax.Array:
     """The bodies' external forces (Gymnasium's data.cfrc_ext), which MJX
-    keeps with its JAX implementation's fields."""
+    keeps with each physics' own fields."""
     return data._impl.cfrc_ext
 
 
@@ -115,17 +116,31 @@ class GymnasiumTask:
     #: Whether the task reads cfrc_ext, which Gymnasium computes after every
     #: step (mj_rnePostConstraint) and MJX only on request.
     contact_forces: bool = False
+    #: Whether the task's capsules stand steep enough on the floor that
+    #: MuJoCo Warp's own capsule-on-plane tangent moves its steps away from
+    #: C MuJoCo's (see warp_contact): on Warp it needs the fix.
+    steep_capsules_on_plane: bool = False
 
     def __init__(self, physics: str = "jax"):
-        if physics == "warp" and self.contact_forces:
-            # MJX's rne_postconstraint, which computes cfrc_ext, raises on
-            # MuJoCo Warp up to 4.0.1; MuJoCo's main branch adds a Warp option
-            # for it (opt.run_rne_postconstraint), after this package's range.
+        warp_contact_forces = physics == "warp" and self.contact_forces
+        if warp_contact_forces and mujoco.mj_version() < 3_014_000:
+            # MJX's rne_postconstraint raises on MuJoCo Warp; from 3.14, Warp
+            # runs its own after each step (opt.run_rne_postconstraint).
             raise ValueError(
                 f"{type(self).__name__} reads the bodies' contact forces"
-                " (cfrc_ext), which MJX computes only on its JAX physics."
-                " Use physics='jax'."
+                " (cfrc_ext), which MuJoCo Warp computes from MuJoCo 3.14."
+                f" This is {mujoco.__version__}: upgrade mujoco and mujoco-mjx,"
+                " or use physics='jax'."
             )
+        if physics == "warp":
+            fixed = patch_warp_plane_capsule()
+            if self.steep_capsules_on_plane and not fixed:
+                raise ValueError(
+                    f"{type(self).__name__} on MuJoCo Warp needs C MuJoCo's"
+                    " capsule-on-plane contacts, which gymnasium-mjx could not"
+                    " give MuJoCo Warp here (see the warning above). Use"
+                    " physics='jax'."
+                )
         self.physics = physics
         self.xml_path = str(ASSETS / self.xml_file)
         self.mj_model = mujoco.MjModel.from_xml_path(self.xml_path)
@@ -135,6 +150,19 @@ class GymnasiumTask:
             # separates them (up to 3e-4 in velocity after one step).
             self.mj_model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
         self.mjx_model = mjx.put_model(self.mj_model, impl=physics)
+        # Reset's mj_forward, which in C MuJoCo leaves cfrc_ext as reset
+        # left it (zero): on Warp, the model without the contact forces.
+        self.forward_model = self.mjx_model
+        if warp_contact_forces:
+            # Gymnasium calls mj_rnePostConstraint after mj_step. Warp runs it
+            # at the end of the step's forward pass instead; cfrc_ext reads
+            # only the contact forces and the bodies' poses, which the
+            # integration after it leaves alone, so the two agree.
+            option = self.mjx_model.opt
+            warp_option = option._impl.replace(run_rne_postconstraint=True)
+            self.mjx_model = self.mjx_model.replace(
+                opt=option.replace(_impl=warp_option)
+            )
         self.sim_dt = float(self.mj_model.opt.timestep)
         self.dt = self.sim_dt * self.frame_skip
         self.action_size = self.mj_model.nu
@@ -153,7 +181,7 @@ class GymnasiumTask:
         """Gymnasium's set_state: the state, then mj_forward."""
         data = mjx.make_data(self.mj_model, impl=self.physics, naconmax=WARP_CONTACTS)
         with c_contacts():
-            data = mjx.forward(self.mjx_model, data.replace(qpos=qpos, qvel=qvel))
+            data = mjx.forward(self.forward_model, data.replace(qpos=qpos, qvel=qvel))
         self.check_warp_room(data)
         # MJX's forward writes free joints' quaternions back normalised; C
         # MuJoCo's leaves qpos as set, and Gymnasium's reset observation shows
@@ -196,7 +224,7 @@ class GymnasiumTask:
             carry = (data, self.warp_room_used(data))
             data, used = jax.lax.scan(substep, carry, None, self.frame_skip)[0]
         self.check_warp_room(data, used)
-        if self.contact_forces:
+        if self.contact_forces and self.physics != "warp":  # Warp's step did it
             data = mjx.rne_postconstraint(self.mjx_model, data)
         return data
 
