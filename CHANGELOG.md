@@ -13,6 +13,12 @@
   workaround while MuJoCo Warp falls back to a fixed axis on capsules
   steeper than 60° (Ant's legs moved by up to 1.4 in velocity). Applied on
   MuJoCo 3.14 and 3.15 only; elsewhere it warns and Ant refuses Warp.
+- On MuJoCo Warp, the convex-collision (GJK/EPA) buffer has a slot for each
+  of a task's geom pairs in 1,024 worlds, not for the whole contact buffer:
+  each physics call allocates scratch for every slot (320 MB a call on
+  Pusher, now 47 MB at most), and each CUDA graph Warp keeps reserves
+  addresses for it. On an 11 GB GPU, new graphs failed after a few PPO
+  evaluations on Pusher with under 1.4 GB in use. Ported from Ajax.
 - A `warp` extra, and the `playground` extra now installs the warp-lang
   that the installed MJX release was built against: MJX imports warp-lang
   when present, and another version fails at import.
