@@ -25,10 +25,11 @@ NAMED_TAG_BIT = 0x80000000
 #: program steps at once (vmapped environments and seeds share it). Without
 #: it, MuJoCo Warp's default for these models is 48 contacts in all: 47
 #: Hopper worlds overflowed it, and MuJoCo Warp then drops contacts silently.
-#: Room for 1,024 worlds of 48 contacts each (MuJoCo Warp's default for one
-#: world), the value Ajax uses and near the 50,000 Playground gives its
-#: locomotion tasks. The JAX physics ignores it.
-WARP_CONTACTS = 48 * 1024
+#: Room for WARP_WORLDS worlds of 48 contacts each (MuJoCo Warp's default for
+#: one world), near the 50,000 Playground gives its locomotion tasks. The JAX
+#: physics ignores it.
+WARP_WORLDS = 1024
+WARP_CONTACTS = 48 * WARP_WORLDS
 
 
 def derive_key(key: jax.Array, name: str) -> jax.Array:
@@ -179,7 +180,12 @@ class GymnasiumTask:
 
     def set_state(self, qpos: jax.Array, qvel: jax.Array) -> mjx.Data:
         """Gymnasium's set_state: the state, then mj_forward."""
-        data = mjx.make_data(self.mj_model, impl=self.physics, naconmax=WARP_CONTACTS)
+        data = mjx.make_data(
+            self.mj_model,
+            impl=self.physics,
+            naconmax=WARP_CONTACTS,
+            naccdmax=self.warp_convex_room(),
+        )
         with c_contacts():
             data = mjx.forward(self.forward_model, data.replace(qpos=qpos, qvel=qvel))
         self.check_warp_room(data)
@@ -187,6 +193,25 @@ class GymnasiumTask:
         # MuJoCo's leaves qpos as set, and Gymnasium's reset observation shows
         # the noisy, unnormalised quaternion.
         return data.replace(qpos=qpos)
+
+    def warp_convex_room(self) -> int | None:
+        """Slots in MuJoCo Warp's buffer for convex (GJK/EPA) collisions,
+        which every world of a batch shares: one for each geom pair that can
+        collide, in each of WARP_WORLDS worlds, and no more than the contact
+        buffer, as MuJoCo Warp requires. None on the JAX physics.
+
+        MuJoCo Warp's default is the whole contact buffer, and each physics
+        call allocates about 6.5 kB of scratch per slot: 320 MB a call on
+        Pusher, which has 7 pairs. Warp keeps a CUDA graph of a call for each
+        new set of XLA buffer addresses, up to 32 per function. The graphs
+        share their physical memory, but each reserves its own addresses for
+        its scratch, and on an 11 GB GPU the driver refused new ones after
+        about 76 graphs (21 GiB), with under 1.4 GB in use: Ajax's PPO on
+        Pusher stopped after a few evaluations."""
+        if self.physics != "warp":
+            return None
+        pairs = sum(self.mjx_model._impl.geom_pair_type_count)
+        return min(int(pairs) * WARP_WORLDS, WARP_CONTACTS)
 
     def initial_state(self, key: jax.Array) -> tuple[jax.Array, jax.Array]:
         """The task's reset_model draw: (qpos, qvel)."""
