@@ -16,7 +16,7 @@ import jax
 import jax.numpy as jnp
 from mujoco import mjx
 
-from gymnasium_mjx.base import GymnasiumTask, derive_key
+from gymnasium_mjx.base import GymnasiumTask, cfrc_ext, derive_key
 
 
 class InvertedPendulum(GymnasiumTask):
@@ -444,6 +444,272 @@ class Pusher(GymnasiumTask):
         return reward, jnp.array(False), terms
 
 
+class Ant(GymnasiumTask):
+    """ant_v5.py: the main body's x speed and a healthy reward, less the
+    control cost and the cost of the contact forces clipped to [-1, 1];
+    healthy while the state is finite and 0.2 <= z <= 1. The observation
+    ends with those clipped forces."""
+
+    xml_file = "ant.xml"
+    frame_skip = 5
+    contact_forces = True
+
+    def __init__(
+        self,
+        forward_reward_weight: float = 1.0,
+        ctrl_cost_weight: float = 0.5,
+        contact_cost_weight: float = 5e-4,
+        healthy_reward: float = 1.0,
+        main_body: int | str = 1,
+        terminate_when_unhealthy: bool = True,
+        healthy_z_range: tuple[float, float] = (0.2, 1.0),
+        contact_force_range: tuple[float, float] = (-1.0, 1.0),
+        reset_noise_scale: float = 0.1,
+        exclude_current_positions_from_observation: bool = True,
+        include_cfrc_ext_in_observation: bool = True,
+        physics: str = "jax",
+    ):
+        self.forward_reward_weight = forward_reward_weight
+        self.ctrl_cost_weight = ctrl_cost_weight
+        self.contact_cost_weight = contact_cost_weight
+        self.healthy_reward = healthy_reward
+        self.terminate_when_unhealthy = terminate_when_unhealthy
+        self.healthy_z_range = healthy_z_range
+        self.contact_force_range = contact_force_range
+        self.reset_noise_scale = reset_noise_scale
+        self.exclude_positions = exclude_current_positions_from_observation
+        self.include_contact_forces = include_cfrc_ext_in_observation
+        super().__init__(physics)
+        self.main_body = self.mj_model.body(main_body).id
+
+    def initial_state(self, key):
+        qpos_key = derive_key(key, "reset_qpos")
+        qvel_key = derive_key(key, "reset_qvel")
+        scale = self.reset_noise_scale
+        qpos = self.init_qpos + self.uniform(qpos_key, scale, self.mj_model.nq)
+        noise = scale * jax.random.normal(qvel_key, (self.mj_model.nv,))
+        return qpos, self.init_qvel + noise
+
+    def clipped_contact_forces(self, data: mjx.Data) -> jax.Array:
+        return jnp.clip(cfrc_ext(data), *self.contact_force_range)
+
+    def observe(self, data):
+        position = data.qpos[2:] if self.exclude_positions else data.qpos
+        parts = [position, data.qvel]
+        if self.include_contact_forces:
+            parts.append(self.clipped_contact_forces(data)[1:].ravel())
+        return jnp.concatenate(parts)
+
+    def outcome(self, before, after, action):
+        x_before = before.xpos[self.main_body, 0]
+        x_after = after.xpos[self.main_body, 0]
+        x_velocity = (x_after - x_before) / self.dt
+        z = after.qpos[2]
+        min_z, max_z = self.healthy_z_range
+        state = jnp.concatenate([after.qpos, after.qvel])
+        healthy = jnp.all(jnp.isfinite(state)) & (min_z <= z) & (z <= max_z)
+        forces = self.clipped_contact_forces(after)
+        terms = {
+            "reward_forward": self.forward_reward_weight * x_velocity,
+            "reward_ctrl": -self.ctrl_cost_weight * jnp.sum(jnp.square(action)),
+            "reward_contact": -self.contact_cost_weight * jnp.sum(jnp.square(forces)),
+            "reward_survive": jnp.where(healthy, self.healthy_reward, 0.0),
+        }
+        reward = (
+            terms["reward_forward"]
+            + terms["reward_survive"]
+            + terms["reward_ctrl"]
+            + terms["reward_contact"]
+        )
+        terminated = ~healthy & self.terminate_when_unhealthy
+        return reward, terminated, terms
+
+
+class HumanoidTask(GymnasiumTask):
+    """What Humanoid and HumanoidStandup share: the reset, the observation
+    (positions, velocities, then the bodies' inertia, velocity, actuator
+    forces and contact forces), and costs on the control and on the contact
+    forces. Their models ask for the PGS solver, which MJX lacks; they run
+    with Newton's (see GymnasiumTask)."""
+
+    frame_skip = 5
+    contact_forces = True
+
+    def __init__(
+        self,
+        ctrl_cost_weight: float,
+        reset_noise_scale: float,
+        exclude_current_positions_from_observation: bool,
+        include_cinert_in_observation: bool,
+        include_cvel_in_observation: bool,
+        include_qfrc_actuator_in_observation: bool,
+        include_cfrc_ext_in_observation: bool,
+        physics: str,
+    ):
+        self.ctrl_cost_weight = ctrl_cost_weight
+        self.reset_noise_scale = reset_noise_scale
+        self.exclude_positions = exclude_current_positions_from_observation
+        self.include_cinert = include_cinert_in_observation
+        self.include_cvel = include_cvel_in_observation
+        self.include_qfrc_actuator = include_qfrc_actuator_in_observation
+        self.include_contact_forces = include_cfrc_ext_in_observation
+        super().__init__(physics)
+
+    def initial_state(self, key):
+        qpos_key = derive_key(key, "reset_qpos")
+        qvel_key = derive_key(key, "reset_qvel")
+        scale = self.reset_noise_scale
+        qpos = self.init_qpos + self.uniform(qpos_key, scale, self.mj_model.nq)
+        qvel = self.init_qvel + self.uniform(qvel_key, scale, self.mj_model.nv)
+        return qpos, qvel
+
+    def observe(self, data):
+        position = data.qpos[2:] if self.exclude_positions else data.qpos
+        parts = [position, data.qvel]
+        if self.include_cinert:
+            parts.append(data.cinert[1:].ravel())
+        if self.include_cvel:
+            parts.append(data.cvel[1:].ravel())
+        if self.include_qfrc_actuator:
+            # Leaves out the free joint's six entries.
+            parts.append(data.qfrc_actuator[6:])
+        if self.include_contact_forces:
+            parts.append(cfrc_ext(data)[1:].ravel())
+        return jnp.concatenate(parts)
+
+    def control_cost(self, data: mjx.Data) -> jax.Array:
+        # Gymnasium reads the control from data.ctrl, which holds the action.
+        return self.ctrl_cost_weight * jnp.sum(jnp.square(data.ctrl))
+
+    def contact_cost(
+        self, data: mjx.Data, weight: float, cost_range: tuple[float, float]
+    ) -> jax.Array:
+        return jnp.clip(weight * jnp.sum(jnp.square(cfrc_ext(data))), *cost_range)
+
+
+class Humanoid(HumanoidTask):
+    """humanoid_v5.py: the speed of the centre of mass and a healthy reward,
+    less the control and contact costs; healthy while 1 < z < 2."""
+
+    xml_file = "humanoid.xml"
+
+    def __init__(
+        self,
+        forward_reward_weight: float = 1.25,
+        ctrl_cost_weight: float = 0.1,
+        contact_cost_weight: float = 5e-7,
+        contact_cost_range: tuple[float, float] = (-float("inf"), 10.0),
+        healthy_reward: float = 5.0,
+        terminate_when_unhealthy: bool = True,
+        healthy_z_range: tuple[float, float] = (1.0, 2.0),
+        reset_noise_scale: float = 1e-2,
+        exclude_current_positions_from_observation: bool = True,
+        include_cinert_in_observation: bool = True,
+        include_cvel_in_observation: bool = True,
+        include_qfrc_actuator_in_observation: bool = True,
+        include_cfrc_ext_in_observation: bool = True,
+        physics: str = "jax",
+    ):
+        self.forward_reward_weight = forward_reward_weight
+        self.contact_cost_weight = contact_cost_weight
+        self.contact_cost_range = contact_cost_range
+        self.healthy_reward = healthy_reward
+        self.terminate_when_unhealthy = terminate_when_unhealthy
+        self.healthy_z_range = healthy_z_range
+        super().__init__(
+            ctrl_cost_weight,
+            reset_noise_scale,
+            exclude_current_positions_from_observation,
+            include_cinert_in_observation,
+            include_cvel_in_observation,
+            include_qfrc_actuator_in_observation,
+            include_cfrc_ext_in_observation,
+            physics,
+        )
+        mass = jnp.asarray(self.mj_model.body_mass)
+        self.mass_share = mass / jnp.sum(mass)
+
+    def mass_centre(self, data: mjx.Data) -> jax.Array:
+        return (self.mass_share @ data.xipos)[:2]
+
+    def outcome(self, before, after, action):  # noqa: ARG002 (shared signature)
+        velocity = (self.mass_centre(after) - self.mass_centre(before)) / self.dt
+        z = after.qpos[2]
+        min_z, max_z = self.healthy_z_range
+        healthy = (min_z < z) & (z < max_z)
+        contact_cost = self.contact_cost(
+            after, self.contact_cost_weight, self.contact_cost_range
+        )
+        terms = {
+            "reward_survive": jnp.where(healthy, self.healthy_reward, 0.0),
+            "reward_forward": self.forward_reward_weight * velocity[0],
+            "reward_ctrl": -self.control_cost(after),
+            "reward_contact": -contact_cost,
+        }
+        reward = (
+            terms["reward_forward"]
+            + terms["reward_survive"]
+            + terms["reward_ctrl"]
+            + terms["reward_contact"]
+        )
+        terminated = ~healthy & self.terminate_when_unhealthy
+        return reward, terminated, terms
+
+
+class HumanoidStandup(HumanoidTask):
+    """humanoidstandup_v5.py: the torso's height over the physics time step,
+    plus 1, less the control and impact costs; no termination."""
+
+    xml_file = "humanoidstandup.xml"
+
+    def __init__(
+        self,
+        uph_cost_weight: float = 1.0,
+        ctrl_cost_weight: float = 0.1,
+        impact_cost_weight: float = 0.5e-6,
+        impact_cost_range: tuple[float, float] = (-float("inf"), 10.0),
+        reset_noise_scale: float = 1e-2,
+        exclude_current_positions_from_observation: bool = True,
+        include_cinert_in_observation: bool = True,
+        include_cvel_in_observation: bool = True,
+        include_qfrc_actuator_in_observation: bool = True,
+        include_cfrc_ext_in_observation: bool = True,
+        physics: str = "jax",
+    ):
+        # Gymnasium takes uph_cost_weight but its reward never reads it; kept
+        # so that its keyword arguments work here too.
+        self.uph_cost_weight = uph_cost_weight
+        self.impact_cost_weight = impact_cost_weight
+        self.impact_cost_range = impact_cost_range
+        super().__init__(
+            ctrl_cost_weight,
+            reset_noise_scale,
+            exclude_current_positions_from_observation,
+            include_cinert_in_observation,
+            include_cvel_in_observation,
+            include_qfrc_actuator_in_observation,
+            include_cfrc_ext_in_observation,
+            physics,
+        )
+
+    def outcome(self, before, after, action):  # noqa: ARG002 (shared signature)
+        impact_cost = self.contact_cost(
+            after, self.impact_cost_weight, self.impact_cost_range
+        )
+        terms = {
+            "reward_linup": after.qpos[2] / self.sim_dt,
+            "reward_quadctrl": -self.control_cost(after),
+            "reward_impact": -impact_cost,
+        }
+        reward = (
+            terms["reward_linup"]
+            + terms["reward_quadctrl"]
+            + terms["reward_impact"]
+            + 1
+        )
+        return reward, jnp.array(False), terms
+
+
 #: Each task by its Gymnasium id.
 TASKS: dict[str, type[GymnasiumTask]] = {
     "InvertedPendulum-v5": InvertedPendulum,
@@ -454,6 +720,9 @@ TASKS: dict[str, type[GymnasiumTask]] = {
     "Hopper-v5": Hopper,
     "Walker2d-v5": Walker2d,
     "Pusher-v5": Pusher,
+    "Ant-v5": Ant,
+    "Humanoid-v5": Humanoid,
+    "HumanoidStandup-v5": HumanoidStandup,
 }
 
 
