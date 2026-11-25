@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+Upgrade notes: `PlaygroundTask` now maps its actions, so results through it
+change on Humanoid, HumanoidStandup, InvertedPendulum and Pusher.
+
+- `PlaygroundTask` maps actions in [-1, 1] onto Gymnasium's action space
+  (each motor's ctrlrange), clipping first, as SB3-style agents rescale onto
+  Gymnasium's. It passed them through unchanged, and Playground's agents act
+  in [-1, 1]: on Humanoid and HumanoidStandup (motors ±0.4) any action past
+  0.4 saturated the motor while the control cost charged it in full, and
+  InvertedPendulum (±3) and Pusher (±2) reached a third and a half of their
+  range. SAC on Humanoid ended 12% below Gymnasium's (4,463 against 5,092,
+  10 seeds); with the mapping, four seeds reached 4,915-5,174.
+- `GymnasiumTask.action_bounds`: Gymnasium's action space, (low, high), the
+  units `step` takes. The task itself is unchanged.
+
 ## 0.2.0
 
 All eleven of Gymnasium's v5 MuJoCo tasks, MuJoCo up to 3.15, and MuJoCo
