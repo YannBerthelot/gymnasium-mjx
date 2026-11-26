@@ -32,11 +32,21 @@ jobs:
         python: ["3.12", "3.14"]
     env:
       JAX_PLATFORMS: cpu
+      # JAX's persistent compilation cache, kept between runs: compiling the
+      # MuJoCo models is most of the suite's time (3-5x more at jax 0.5).
+      JAX_COMPILATION_CACHE_DIR: ${{ github.workspace }}/.jax_cache
+      JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS: "0"
+      JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES: "-1"
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
+      - uses: actions/cache@v4
+        with:
+          path: .jax_cache
+          key: jax-cache-${{ matrix.python }}-${{ hashFiles('uv.lock') }}-${{ github.run_id }}
+          restore-keys: jax-cache-${{ matrix.python }}-
       - run: uv sync --locked --python ${{ matrix.python }}
-      - run: uv run --python ${{ matrix.python }} pytest
+      - run: uv run --python ${{ matrix.python }} pytest -n auto
 
   build:
     runs-on: ubuntu-latest
