@@ -6,3 +6,6 @@ dist/
 .ruff_cache/
 *.egg-info/
 MUJOCO_LOG.TXT
+
+# JAX persistent compilation cache (CI sets JAX_COMPILATION_CACHE_DIR here)
+.jax_cache/

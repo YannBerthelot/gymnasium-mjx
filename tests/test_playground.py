@@ -32,8 +32,9 @@ def test_the_adapter_steps_as_the_task_does():
     key = jax.random.key(3)
     action = jnp.linspace(-1.0, 1.0, task.action_size)
 
-    expected = task.step(task.reset(key), action)
-    observed = adapted.step(adapted.reset(key), action)
+    # Jitted, as callers run them: step by step, MJX dispatches op by op.
+    expected = jax.jit(task.step)(jax.jit(task.reset)(key), action)
+    observed = jax.jit(adapted.step)(jax.jit(adapted.reset)(key), action)
 
     np.testing.assert_array_equal(observed.obs, expected.obs)
     np.testing.assert_array_equal(observed.reward, expected.reward)
@@ -72,10 +73,14 @@ def test_the_adapter_maps_its_actions_onto_gymnasiums_action_space(task_id):
     adapted = PlaygroundTask(task)
     key = jax.random.key(3)
     ones = jnp.ones(task.action_size)
+    # Jitted once and reused for both actions: unjitted, MJX dispatches op by
+    # op, which took 7 minutes on Humanoid at the oldest supported jax.
+    adapted_reset, adapted_step = jax.jit(adapted.reset), jax.jit(adapted.step)
+    task_reset, task_step = jax.jit(task.reset), jax.jit(task.step)
 
     for agent, control in [(ones, space.high), (-ones, space.low)]:
-        observed = adapted.step(adapted.reset(key), agent)
-        expected = task.step(task.reset(key), jnp.asarray(control))
+        observed = adapted_step(adapted_reset(key), agent)
+        expected = task_step(task_reset(key), jnp.asarray(control))
 
         np.testing.assert_allclose(observed.data.ctrl, control, rtol=0, atol=1e-6)
         np.testing.assert_array_equal(observed.reward, expected.reward)

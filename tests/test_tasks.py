@@ -133,7 +133,7 @@ def test_one_step_from_gymnasiums_states_gives_gymnasiums_values(
 
     with x64(dtype == "float64"):
         task = make(task_id, physics=physics)
-        template = task.reset(jax.random.key(0))
+        template = jax.jit(task.reset)(jax.random.key(0))
 
         @jax.jit
         def one_step(start, action):

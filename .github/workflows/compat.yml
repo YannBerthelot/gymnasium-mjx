@@ -1,11 +1,19 @@
 name: Compatibility
 
 # The declared dependency floors and the newest releases (RELEASING.md,
-# "between releases"): weekly, and when the dependencies change.
+# "between releases"): weekly, when the dependencies change, and from the
+# Release workflow on the commit to tag, which needs them green (owner
+# 2026-11-26).
 on:
   schedule:
     - cron: "0 5 * * 1"
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit to run on.
+        type: string
+        required: true
   pull_request:
     paths: [pyproject.toml, uv.lock]
 
@@ -23,8 +31,20 @@ jobs:
         resolution: [highest, lowest-direct]
     env:
       JAX_PLATFORMS: cpu
+      # JAX's persistent compilation cache, kept between runs: compiling the
+      # MuJoCo models is most of the suite's time (3-5x more at jax 0.5).
+      JAX_COMPILATION_CACHE_DIR: ${{ github.workspace }}/.jax_cache
+      JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS: "0"
+      JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES: "-1"
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
       - uses: astral-sh/setup-uv@v10.3.0
+      - uses: actions/cache@v4
+        with:
+          path: .jax_cache
+          key: jax-cache-${{ matrix.resolution }}-${{ hashFiles('uv.lock') }}-${{ github.run_id }}
+          restore-keys: jax-cache-${{ matrix.resolution }}-
       - run: uv sync --upgrade --resolution ${{ matrix.resolution }} --python 3.12
-      - run: uv run --no-sync pytest
+      - run: uv run --no-sync pytest -n auto
