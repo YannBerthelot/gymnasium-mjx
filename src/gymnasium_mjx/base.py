@@ -172,6 +172,15 @@ class GymnasiumTask:
         self.init_qvel = jnp.zeros(self.mj_model.nv)
 
     @property
+    def action_bounds(self) -> tuple[jax.Array, jax.Array]:
+        """Gymnasium's action space, (low, high): each motor's ctrlrange
+        (mujoco_env.py's _set_action_space), the units step takes. A motor
+        without a control limit gets infinite bounds."""
+        limited = jnp.asarray(self.mj_model.actuator_ctrllimited, dtype=bool)
+        low, high = jnp.asarray(self.mj_model.actuator_ctrlrange).T
+        return jnp.where(limited, low, -jnp.inf), jnp.where(limited, high, jnp.inf)
+
+    @property
     def observation_size(self) -> int:
         return jax.eval_shape(self.reset, jax.random.key(0)).obs.shape[-1]
 

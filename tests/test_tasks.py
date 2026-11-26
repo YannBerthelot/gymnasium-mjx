@@ -389,3 +389,13 @@ def test_a_task_carries_gymnasiums_time_limit(task_id):
 def test_an_unknown_task_is_refused():
     with pytest.raises(ValueError, match="No MuJoCo task 'Hopper-v4'"):
         make("Hopper-v4")
+
+
+@pytest.mark.parametrize("task_id", sorted(TASKS))
+def test_the_action_bounds_are_gymnasiums_action_space(task_id):
+    space = gymnasium.make(task_id).action_space
+
+    low, high = make(task_id).action_bounds
+
+    np.testing.assert_allclose(low, space.low, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(high, space.high, rtol=0, atol=1e-6)
