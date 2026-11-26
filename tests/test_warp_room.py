@@ -87,6 +87,10 @@ def warp_scratch_megabytes(report: str) -> float:
     jax.default_backend() != "cpu",
     reason="on a GPU, Warp replays a captured CUDA graph: no allocation to count",
 )
+@pytest.mark.skipif(
+    mujoco.mj_version() < 3_009_000,
+    reason="MJX runs MuJoCo Warp on the CPU from 3.9; before, it needs a CUDA GPU",
+)
 def test_a_pusher_physics_call_on_warp_allocates_scratch_for_its_pairs_only():
     """Catches the convex-collision scratch sized for the whole contact
     buffer: MuJoCo Warp sizes it for 49,152 collisions unless told, and
