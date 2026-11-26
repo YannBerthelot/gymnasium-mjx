@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 Upgrade notes: `PlaygroundTask` now maps its actions, so results through it
 change on Humanoid, HumanoidStandup, InvertedPendulum and Pusher.
@@ -12,7 +12,8 @@ change on Humanoid, HumanoidStandup, InvertedPendulum and Pusher.
   0.4 saturated the motor while the control cost charged it in full, and
   InvertedPendulum (±3) and Pusher (±2) reached a third and a half of their
   range. SAC on Humanoid ended 12% below Gymnasium's (4,463 against 5,092,
-  10 seeds); with the mapping, four seeds reached 4,915-5,174.
+  10 seeds a side); with the mapping it ends at 5,025, 1.3% below and
+  within the noise (p = 0.57).
 - `GymnasiumTask.action_bounds`: Gymnasium's action space, (low, high), the
   units `step` takes. The task itself is unchanged.
 
