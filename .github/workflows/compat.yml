@@ -15,8 +15,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # The floors' run took 25-30 minutes (MuJoCo 3.7 compiles slower).
-    timeout-minutes: 45
+    # The floors' run took 25-44 minutes (MuJoCo 3.7 compiles slower).
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
